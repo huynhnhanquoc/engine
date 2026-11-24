@@ -1,0 +1,10 @@
+# Go
+*.exe
+*.test
+# the test app's site folders are named for their hostnames (alpha.test, beta.test): a folder, never a test binary
+!/testdata/**/*.test/
+*.out
+/.artifacts/
+/.gocache*/
+.env
+.env.*

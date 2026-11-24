@@ -1,0 +1,1 @@
+(function(){var e={get mode(){return window.kitwork.appearance.mode},get dark(){return window.kitwork.appearance.dark},toggle:function(){window.kitwork.appearance.toggle()},set:function(e){window.kitwork.appearance.set(e)},system:function(){window.kitwork.appearance.system()}};window.kitwork.component("appearance",e)})()

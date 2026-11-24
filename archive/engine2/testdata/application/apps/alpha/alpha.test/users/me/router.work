@@ -1,0 +1,4 @@
+// "/users/me": an exact folder, tried before the parameters beside it.
+import * as router from "kitwork/router";
+
+router.get((context) => context.text("me"));

@@ -1,0 +1,8 @@
+// "/broken": a handler that fails. The visitor reads 500 and nothing more; the failure, with where it is
+// written, goes to the log.
+import * as router from "kitwork/router";
+
+router.get((context) => {
+  const missing = null;
+  return context.text(missing.name);
+});

@@ -1,0 +1,105 @@
+// Router của quán cà phê: tập con JavaScript mà máy ảo Kitwork chạy.
+import * as router from "kitwork/router";
+import { environment } from "kitwork";
+import { desc } from "kitwork/database";
+import { db } from "app/.shared/schema/shop.work";
+import { normalize, slugOf } from "app/.shared/normalize.work";
+import { receipt } from "app/.shared/receipt.work";
+
+const PAGE_SIZE = environment.PAGE_SIZE || 20;
+const OPEN_HOUR = environment.OPEN_HOUR || 7;
+const CLOSE_HOUR = environment.CLOSE_HOUR || 22;
+const SIZES = ["S", "M", "L"];
+const SURCHARGE = { S: 0, M: 4000, L: 6000 };
+const TAX = 0.08;
+const MAX_QUANTITY = 20;
+
+router.reload(false);
+router.favicon("assets/favicon.ico");
+router.language("vi");
+router.meta({ title: "Quán cà phê — thực đơn hôm nay", site: "Quán cà phê", type: "website", locale: "vi_VN" });
+
+function priceOf(drink, size) {
+  const extra = SURCHARGE[size] || 0;
+  return size === "L" ? drink.price + extra : drink.price + extra / 2 * 2;
+}
+
+function isOpen(hour) {
+  return hour >= OPEN_HOUR && hour < CLOSE_HOUR;
+}
+
+function lineTotal(line) {
+  return Math.round(line.price * line.quantity * (1 + TAX));
+}
+
+const toCard = row => ({
+  id: row.id,
+  slug: slugOf(row.name),
+  name: normalize(row.name),
+  price: priceOf(row, "M"),
+  tags: row.tags || [],
+});
+
+function statusOf(code) {
+  let label = "";
+  switch (code) {
+    case "open":
+      label = "Đang mở";
+      break;
+    case "paused":
+      label = "Tạm nghỉ";
+      break;
+    default:
+      label = "Đã đóng";
+  }
+  return label;
+}
+
+router.get((context) => {
+  const hour = new Date().getHours();
+  const page = Number(context.request.query("page") || 1);
+  const { value: rows = [] } = safe(() => db.where((drinks) => drinks.available === true)
+    .orderBy((drinks) => desc(drinks.price))
+    .list({ page, limit: PAGE_SIZE }));
+  const cards = rows.map(toCard);
+  let cheapest = null;
+  for (let i = 0; i < cards.length; i++) {
+    if (cheapest === null || cards[i].price < cheapest.price) {
+      cheapest = cards[i];
+    }
+  }
+  return context.title(`Mở cửa ${OPEN_HOUR}h–${CLOSE_HOUR}h`).view({
+    open: isOpen(hour),
+    status: statusOf(isOpen(hour) ? "open" : "closed"),
+    drinks: cards,
+    cheapest,
+    page,
+    note: `trang ${page}/${Math.ceil(rows.length / PAGE_SIZE)}`,
+  });
+}).cache("1m", "page");
+
+router.post((context) => {
+  const body = context.request.json();
+  const lines = [];
+  for (const item of body.items || []) {
+    if (!SIZES.includes(item.size)) {
+      return context.status(400).json({ error: `kích cỡ "${item.size}" không có` });
+    }
+    const quantity = Math.min(Number(item.quantity || 1), MAX_QUANTITY);
+    const wanted = item.id;
+    const drink = db.first((drinks) => drinks.id === wanted);
+    if (drink === null) {
+      return context.notFound();
+    }
+    lines.push({ id: wanted, size: item.size, quantity: quantity, price: priceOf(drink, item.size) });
+  }
+  let sum = 0;
+  for (const line of lines) {
+    sum += lineTotal(line);
+  }
+  const note = body.note || null;
+  const deposit = Math.round(sum * 3 / 4);
+  db.insert((orders) => ({ total: sum, note }));
+  console.log("đơn mới", sum);
+  return context.json({ ok: true, total: sum, deposit, receipt: receipt({ lines, sum, note, at: Date.now() }) });
+}).limit({ rate: 5, per: "1m", by: "ip" });

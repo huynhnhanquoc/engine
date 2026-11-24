@@ -1,0 +1,1 @@
+(function(){var e={close:function(){var e=window.kitwork.context(this).host;e.querySelectorAll(":scope > details").forEach(function(e){e.open=!1})}};window.kitwork.component("accordions",e)})()

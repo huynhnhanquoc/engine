@@ -1,0 +1,4 @@
+// "/files/a/b/c": the rest of the path, one or more segments.
+import * as router from "kitwork/router";
+
+router.get((context) => context.text(context.params("rest")));

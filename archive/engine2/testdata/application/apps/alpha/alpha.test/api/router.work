@@ -1,0 +1,21 @@
+// "/api": JSON. GET says what the site's environment holds, and what it does not: the host's keys and the
+// system's variables never reach an app. POST reads a JSON body and answers 201.
+import * as router from "kitwork/router";
+import * as file from "kitwork/file";
+
+const env = file.env("app/app.env", "app/alpha.test/site.env");
+
+router.get((context) => context.json({
+  site: "alpha.test",
+  shared: env.SHARED,
+  number: env.NUMBER,
+  zip: env.ZIP,
+  host: env.HOST_SECRET,
+  system: env.KITWORK_SLICE_SYSTEM,
+  query: context.query("q")
+}));
+
+router.post((context) => {
+  const order = context.request.json();
+  return context.status(201).json({ received: order, method: context.request.method });
+});

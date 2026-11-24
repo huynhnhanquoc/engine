@@ -1,0 +1,4 @@
+// "/users/abc": a plain parameter, a text.
+import * as router from "kitwork/router";
+
+router.get(({ request, response }) => response.json({ name: request.params("name"), kind: typeof request.params("name") }));

@@ -1,0 +1,535 @@
+// Browser-backed platform services exposed through the canonical `kitwork.*` namespaces.
+(function (window, document) {
+  "use strict";
+
+  var kitwork = window.kitwork;
+  if (!kitwork || !kitwork.module || !kitwork.service || kitwork.has("web")) return;
+
+  // The web kernel carries no native module (KernelFile(false)): the bridge is looked up when a
+  // service runs, so a page in a browser takes the browser path instead of throwing on undefined.
+  var native = {
+    get available() {
+      var bridge = kitwork.module("native");
+      return !!(bridge && bridge.available);
+    },
+    call: function (name, args) { return kitwork.module("native").call(name, args); }
+  };
+  var navigator = window.navigator || {};
+  var hasOwn = Object.prototype.hasOwnProperty;
+  var capabilityIDs = Object.create(null);
+
+  [
+    "capabilities.supports",
+    "share.open",
+    "clipboard.writeText",
+    "clipboard.readText",
+    "clipboard.copy",
+    "camera.capture",
+    "appearance.mode",
+    "appearance.dark",
+    "appearance.resolved",
+    "appearance.set",
+    "appearance.toggle",
+    "appearance.system",
+    "navigation.back",
+    "navigation.forward",
+    "navigation.reload",
+    "host.info",
+    "host.exit",
+    "host.restart",
+    "permissions.check",
+    "permissions.request",
+    "secureStorage.get",
+    "secureStorage.set",
+    "secureStorage.remove",
+    "cache.get",
+    "cache.set",
+    "database.open",
+    "files.read",
+    "files.write",
+    "files.exists",
+    "media.resize",
+    "audio.record",
+    "audio.play",
+    "screen.capture",
+    "screen.keepAwake",
+    "location.current",
+    "device.info",
+    "device.vibrate",
+    "network.status",
+    "ai.chat",
+    "ai.transcribe",
+    "auth.login",
+    "auth.logout",
+    "session.get",
+    "session.set",
+    "session.clear",
+    "logs.info",
+    "logs.error",
+    "shell.open",
+    "window.drag",
+    "window.minimize",
+    "window.maximize",
+    "window.restore",
+    "window.close",
+    "storage.get",
+    "storage.set",
+    "storage.remove",
+    "storage.clear"
+  ].forEach(function (id) {
+    capabilityIDs[id] = true;
+  });
+
+  function unsupported(moduleName, actionName) {
+    return kitwork.KitworkError(
+      moduleName + "." + actionName + " is unsupported",
+      "UNSUPPORTED",
+      moduleName,
+      actionName
+    );
+  }
+
+  function localStorageAvailable() {
+    try {
+      return !!window.localStorage;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function browserSupports(id) {
+    switch (id) {
+      case "capabilities.supports":
+        return true;
+      case "share.open":
+        return typeof navigator.share === "function";
+      case "clipboard.writeText":
+      case "clipboard.copy":
+        return !!(
+          navigator.clipboard &&
+          typeof navigator.clipboard.writeText === "function"
+        ) || typeof document.execCommand === "function";
+      case "clipboard.readText":
+        return !!(
+          navigator.clipboard &&
+          typeof navigator.clipboard.readText === "function"
+        );
+      case "camera.capture":
+        return (
+          typeof document.createElement === "function" &&
+          typeof window.FileReader !== "undefined"
+        );
+      case "appearance.mode":
+      case "appearance.dark":
+      case "appearance.resolved":
+      case "appearance.set":
+      case "appearance.toggle":
+      case "appearance.system":
+        return !!document.documentElement;
+      case "navigation.back":
+      case "navigation.forward":
+        return !!window.history;
+      case "navigation.reload":
+        return !!window.location;
+      case "storage.get":
+      case "storage.set":
+      case "storage.remove":
+      case "storage.clear":
+        return localStorageAvailable();
+      default:
+        return false;
+    }
+  }
+
+  var capabilities = {
+    supports: function (id) {
+      id = String(id || "");
+      if (!hasOwn.call(capabilityIDs, id)) return Promise.resolve(false);
+      if (
+        id === "capabilities.supports" ||
+        id.indexOf("appearance.") === 0 ||
+        id.indexOf("navigation.") === 0
+      ) {
+        return Promise.resolve(browserSupports(id));
+      }
+      if (native.available) {
+        return native.call("capabilities.supports", { id: id }).then(function (value) {
+          return !!value;
+        });
+      }
+      return Promise.resolve(browserSupports(id));
+    }
+  };
+
+  // (kitwork.dialog — alert, confirm and prompt from logic — went on 26/10/2026: asking before acting is
+  // $dialog.open({ …, confirm }), a dialog the page draws; docs/components/dialog.md.)
+
+  var share = {
+    open: function (options) {
+      if (native.available) return native.call("share.open", options);
+      if (typeof navigator.share !== "function") {
+        return Promise.reject(unsupported("share", "open"));
+      }
+      return Promise.resolve().then(function () {
+        return navigator.share(options || {});
+      });
+    }
+  };
+
+  function writeClipboard(text) {
+    text = text == null ? "" : String(text);
+    if (native.available) {
+      return native.call("clipboard.writeText", { text: text }).then(function () { });
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      return Promise.resolve().then(function () {
+        return navigator.clipboard.writeText(text);
+      }).then(function () { });
+    }
+    if (typeof document.execCommand !== "function") {
+      return Promise.reject(unsupported("clipboard", "writeText"));
+    }
+    return Promise.resolve().then(function () {
+      var area = document.createElement("textarea");
+      area.value = text;
+      area.setAttribute("readonly", "");
+      area.style.position = "fixed";
+      area.style.left = "-9999px";
+      document.body.appendChild(area);
+      try {
+        area.select();
+        if (document.execCommand("copy") === false) {
+          throw unsupported("clipboard", "writeText");
+        }
+      } finally {
+        area.remove();
+      }
+    });
+  }
+
+  var clipboard = {
+    writeText: writeClipboard,
+    readText: function () {
+      if (native.available) return native.call("clipboard.readText");
+      if (navigator.clipboard && typeof navigator.clipboard.readText === "function") {
+        return Promise.resolve().then(function () {
+          return navigator.clipboard.readText();
+        });
+      }
+      return Promise.reject(unsupported("clipboard", "readText"));
+    },
+    copy: writeClipboard
+  };
+
+  function captureCamera(options) {
+    if (
+      typeof document.createElement !== "function" ||
+      typeof window.FileReader === "undefined"
+    ) {
+      return Promise.reject(unsupported("camera", "capture"));
+    }
+    return new Promise(function (resolve, reject) {
+      var input = document.createElement("input");
+      input.type = "file";
+      input.accept = (options && options.accept) || "image/*";
+      input.setAttribute("capture", (options && options.facingMode) || "environment");
+      input.style.display = "none";
+      input.addEventListener("change", function () {
+        var file = input.files && input.files[0];
+        input.remove();
+        if (!file) {
+          resolve(null);
+          return;
+        }
+        var reader = new window.FileReader();
+        reader.onload = function () { resolve(reader.result); };
+        reader.onerror = function () { reject(new Error("Camera file read failed")); };
+        reader.readAsDataURL(file);
+      }, { once: true });
+      input.addEventListener("cancel", function () {
+        input.remove();
+        resolve(null);
+      }, { once: true });
+      document.body.appendChild(input);
+      input.click();
+    });
+  }
+
+  var camera = {
+    capture: function (options) {
+      return native.available ?
+        native.call("camera.capture", options) :
+        captureCamera(options);
+    }
+  };
+
+  // kitwork.appearance — light or dark. Three modes, the same three the server's pre-paint knows:
+  // "light", "dark", and "system" — meaning "follow prefers-color-scheme".
+  //   mode       "light" | "dark" | "system": what was chosen; with no choice stored, the mode the
+  //              site shows before the visitor chooses (router.appearance, below); then "system"
+  //   dark       true while the page shows dark (system resolved) — what an icon follows
+  //   resolved   "light" | "dark", the same fact as a word
+  //   toggle()   flip what is shown;  set(mode);  system() — hand the choice back to the OS
+  // The light/dark service was kitwork.theme until 11/10/2026; that name, kept for template pages and the
+  // theme component, went with them on 26/10/2026.
+  //
+  // The choice is stored under "appearance". It was stored under "theme" before, so a choice found
+  // only there is still the visitor's: "appearance" is read first, and "theme" only when
+  // "appearance" holds none of the three words. A new choice is written to "appearance" alone.
+  //
+  // With no choice stored, the site decides: router.appearance("light" | "dark") in the route's
+  // folder is written on the page as <html data-kitwork-appearance>, and nothing is written for
+  // "system", the default. A stored "system" is a choice like the other two (system() stores it), so
+  // a visitor can follow the device even on a site whose default is dark.
+  //
+  // The pre-paint (jit/theme) decides by exactly this rule before the first paint, so the first paint
+  // and the runtime agree.
+  var appearanceKeys = ["appearance", "theme"];
+  var appearanceDefault = "data-kitwork-appearance";
+
+  function modeWord(value) {
+    value = String(value || "").toLowerCase();
+    return value === "light" || value === "dark" || value === "system" ? value : "";
+  }
+
+  function storedMode(key) {
+    try {
+      return modeWord(window.localStorage.getItem(key));
+    } catch (_) { }
+    return "";
+  }
+
+  // The mode the site shows before the visitor chooses, as the page arriving says it. Read as
+  // defensively as the attributes are written (applyTheme): a host whose document is not a full DOM
+  // has no default, not an error.
+  function siteMode() {
+    try {
+      return modeWord(document.documentElement.getAttribute(appearanceDefault));
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function appearanceMode() {
+    // Anything that is not one of the three words — an empty store, a value some other script left
+    // behind — is no choice: the site's default decides, and with none, the OS.
+    return storedMode(appearanceKeys[0]) || storedMode(appearanceKeys[1]) || siteMode() || "system";
+  }
+
+  function systemTheme() {
+    try {
+      return typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    } catch (_) {
+      return "light";
+    }
+  }
+
+  // What the page is actually painted as, right now — never "system".
+  function resolvedTheme() {
+    return document.documentElement.classList.contains("dark") ? "dark" : "light";
+  }
+
+  // Paint a mode the way the pre-paint does: the dark class, and data-theme and color-scheme set to
+  // what is SHOWN — never "system", which no stylesheet selects on (a site may scope its dark under
+  // [data-theme="dark"] instead of .dark, and "system" there would paint a dark device light).
+  function applyTheme(mode) {
+    var shown = mode === "system" ? systemTheme() : mode;
+    document.documentElement.classList.toggle("dark", shown === "dark");
+    try {
+      document.documentElement.setAttribute("data-theme", shown);
+      document.documentElement.style.colorScheme = shown;
+      showThemeColor(shown);
+    } catch (_) { }
+    return shown;
+  }
+
+  // The browser's bar follows the mode shown, as the pre-paint set it: a Kitwork UI page with a
+  // backdrop writes each <meta name="theme-color"> with both modes' colours (data-kitwork-light,
+  // data-kitwork-dark); the mode shown takes its content and drops its media, so a visitor's choice of
+  // the other mode than the device's colours the bar too. Drive keeps it across a move (drive.js).
+  function showThemeColor(shown) {
+    document.querySelectorAll('meta[name="theme-color"][data-kitwork-' + shown + "]").forEach(function (n) {
+      n.setAttribute("content", n.getAttribute("data-kitwork-" + shown));
+      n.removeAttribute("media");
+    });
+  }
+
+  // Show the mode the rule above gives right now. Drive calls it after a move without a reload when
+  // the page arriving says another site default than the page it replaced (router.appearance is
+  // inherited down the folders, so a branch may show dark where the root follows the device): the
+  // move then looks as a whole load of that page would. A stored choice is shown as it was.
+  function showAppearance() {
+    return applyTheme(appearanceMode());
+  }
+
+  function setTheme(mode) {
+    mode = String(mode || "").toLowerCase();
+    if (mode !== "light" && mode !== "dark" && mode !== "system") {
+      throw kitwork.KitworkError(
+        "Appearance mode must be light, dark or system",
+        "INVALID_ARGUMENT",
+        "appearance",
+        "set",
+        { mode: mode }
+      );
+    }
+    try {
+      window.localStorage.setItem(appearanceKeys[0], mode);
+    } catch (_) { }
+    applyTheme(mode);
+    return mode;
+  }
+
+  var appearance = {
+    set: setTheme,
+    toggle: function () {
+      return setTheme(resolvedTheme() === "dark" ? "light" : "dark");
+    },
+    // Hand the choice back to the operating system. "system" is STORED, not the store emptied: an
+    // empty store means "the site decides", and on a site whose default is dark that is not the
+    // device. The pre-paint reads the stored word on the next load.
+    system: function () {
+      return setTheme("system");
+    }
+  };
+  Object.defineProperties(appearance, {
+    mode: {
+      get: appearanceMode,
+      enumerable: true
+    },
+    dark: {
+      get: function () { return resolvedTheme() === "dark"; },
+      enumerable: true
+    },
+    resolved: {
+      get: function () { return resolvedTheme(); },
+      enumerable: true
+    }
+  });
+
+  var navigation = {
+    back: function () {
+      window.history.back();
+      return true;
+    },
+    forward: function () {
+      window.history.forward();
+      return true;
+    },
+    reload: function () {
+      window.location.reload();
+      return true;
+    }
+  };
+
+  // kitwork.progress — how far the work in flight has got: a page change (Drive reports it), an upload,
+  // a form being sent. One place for every source, so a page never shows two bars that disagree.
+  // JavaScript only: markup reads it through the progressbar component, whose getters read it here.
+  //   start()       work of unknown length — creeps toward 90%, never claiming to be done
+  //   update(n)     work of known length — exactly n percent
+  //   finish()      to 100%, then gone
+  // The last call wins. Every change asks the page to repaint, coalesced into one microtask: a call
+  // from inside an action must not paint in the middle of it.
+  var progressValue = 0, progressActive = false, progressTimer = 0, progressHide = 0, progressQueued = false;
+  function progressPaint() {
+    if (progressQueued) return;
+    progressQueued = true;
+    (typeof queueMicrotask === "function" ? queueMicrotask : function (f) { setTimeout(f, 0); })(function () {
+      progressQueued = false;
+      if (kitwork.runtime && kitwork.runtime.booted) kitwork.render();
+    });
+  }
+  function progressStop() {
+    clearInterval(progressTimer);
+    clearTimeout(progressHide);
+  }
+  var progress = {
+    start: function () {
+      progressStop();
+      progressValue = 10;
+      progressActive = true;
+      progressTimer = setInterval(function () {
+        if (progressValue < 90) { progressValue += (90 - progressValue) / 10; progressPaint(); }
+      }, 200);
+      progressPaint();
+    },
+    update: function (value) {
+      progressStop();
+      progressValue = Math.max(0, Math.min(100, Number(value) || 0));
+      progressActive = true;
+      progressPaint();
+    },
+    finish: function () {
+      progressStop();
+      if (!progressActive) return;
+      progressValue = 100;
+      progressPaint();
+      progressHide = setTimeout(function () { progressActive = false; progressValue = 0; progressPaint(); }, 300);
+    }
+  };
+  Object.defineProperties(progress, {
+    value: { get: function () { return progressValue; }, enumerable: true },
+    active: { get: function () { return progressActive; }, enumerable: true }
+  });
+  kitwork.service("progress", progress);
+
+  // kitwork.reader — what a screen reader says aloud: the new page's title after a move without a reload
+  // (Drive says it), or a sentence a page wants heard. JavaScript only: markup hears it through the
+  // reader component, an invisible live region whose text is this service's.
+  //   say(text)   say a sentence. The text is emptied first and set a moment later: a live region
+  //               speaks a change, and the same title twice (A, B, A) is still two changes.
+  var readerText = "", readerTimer = 0;
+  var reader = {
+    say: function (text) {
+      clearTimeout(readerTimer);
+      readerText = "";
+      progressPaint();
+      readerTimer = setTimeout(function () {
+        readerText = text == null ? "" : String(text);
+        progressPaint();
+      }, 50);
+    }
+  };
+  Object.defineProperty(reader, "text", { get: function () { return readerText; }, enumerable: true });
+  kitwork.service("reader", reader);
+
+  kitwork.service("capabilities", capabilities);
+  kitwork.service("share", share);
+  kitwork.service("clipboard", clipboard);
+  kitwork.service("camera", camera);
+  kitwork.service("appearance", appearance);
+  kitwork.service("navigation", navigation);
+
+  function compatibility(name, value) {
+    Object.defineProperty(kitwork, name, {
+      value: value,
+      configurable: true,
+      writable: true,
+      enumerable: false
+    });
+  }
+
+  compatibility("runtimeInfo", function () {
+    return native.available ?
+      native.call("runtime.info") :
+      Promise.resolve(kitwork.runtime.info());
+  });
+  compatibility("supports", function (id) {
+    return capabilities.supports(id);
+  });
+  compatibility("back", function () {
+    return navigation.back();
+  });
+  compatibility("forward", function () {
+    return navigation.forward();
+  });
+  compatibility("reload", function () {
+    return navigation.reload();
+  });
+
+  kitwork.module("web", {
+    supports: browserSupports,
+    captureCamera: captureCamera,
+    showAppearance: showAppearance
+  });
+})(window, document);

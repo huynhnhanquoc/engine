@@ -1,0 +1,4 @@
+// A folder starting with _ is no route: /_drafts is 404.
+import * as router from "kitwork/router";
+
+router.get((context) => context.text("never served"));

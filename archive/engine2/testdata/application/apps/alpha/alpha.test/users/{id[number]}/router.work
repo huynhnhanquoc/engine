@@ -1,0 +1,5 @@
+// "/users/42": a typed parameter; context.params("id") is a number. "/users/abc" does not match it and goes
+// on to {name}.
+import * as router from "kitwork/router";
+
+router.get((context) => context.json({ id: context.params("id"), kind: typeof context.params("id") }));

@@ -1,0 +1,4 @@
+// "/old": a page that moved.
+import * as router from "kitwork/router";
+
+router.get((context) => context.status(301).redirect("/"));

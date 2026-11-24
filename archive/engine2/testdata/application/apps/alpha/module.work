@@ -1,0 +1,6 @@
+// module.work: the root of the app alpha (docs/module.md). Its zone is the whole app's: Date of every site of it reads
+// its parts in it. Each hostname the host gives alpha is served from the folder of that name.
+import * as module from "kitwork/module";
+
+module.timezone("Asia/Ho_Chi_Minh");
+module.routes((site) => site.domain);

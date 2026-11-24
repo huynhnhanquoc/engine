@@ -1,0 +1,5 @@
+// module.work: the root of the app beta (docs/module.md): each hostname the host gives it is served from the folder
+// of that name.
+import * as module from "kitwork/module";
+
+module.routes((site) => site.domain);

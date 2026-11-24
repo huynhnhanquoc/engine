@@ -1,0 +1,8 @@
+// "/clock": Date reads its parts in the app's zone (alpha: Asia/Ho_Chi_Minh).
+import * as router from "kitwork/router";
+
+router.get((context) => context.json({
+  newYear: new Date(2026, 0, 1).toISOString(),
+  parsed: Date.parse("2026-01-01T00:00:00"),
+  now: typeof Date.now()
+}));

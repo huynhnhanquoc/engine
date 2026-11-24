@@ -1,0 +1,5 @@
+// config.work of the site: the site's rules. engine2 does not serve router.language yet, so the boot says so
+// in one line and goes on.
+import * as router from "kitwork/router";
+
+router.language("vi");

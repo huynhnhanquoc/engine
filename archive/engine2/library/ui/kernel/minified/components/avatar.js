@@ -1,0 +1,1 @@
+(function(){var e={init:function(e){e.owned("img").forEach(function(t){var n=function(){t.hidden=!0};t.complete&&t.getAttribute("src")&&t.naturalWidth===0?n():e.listen(t,"error",n)})}};window.kitwork.component("avatar",e)})()

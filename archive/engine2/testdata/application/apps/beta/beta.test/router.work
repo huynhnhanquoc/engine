@@ -1,0 +1,16 @@
+// beta.test: another app, in UTC (its root has no config.work), with its own environment.
+import * as router from "kitwork/router";
+import * as file from "kitwork/file";
+
+const env = file.env("app/app.env");
+
+router.get((context) => {
+  console.log("hello from beta.test");
+  return context.json({
+    site: "beta.test",
+    greeting: env.GREETING,
+    shared: env.SHARED,
+    alpha: env.NUMBER,
+    newYear: new Date(2026, 0, 1).toISOString()
+  });
+});

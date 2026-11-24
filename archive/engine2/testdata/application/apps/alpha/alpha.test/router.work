@@ -1,0 +1,13 @@
+// "/": a text, made by a library of the app, from the app's .env and the site's over it.
+import * as router from "kitwork/router";
+import * as file from "kitwork/file";
+import { greet } from "app/core/greeting.work";
+
+const env = file.env("app/app.env", "./site.env");
+
+console.log("router.work of alpha.test is read");
+
+router.get((context) => {
+  console.log("hello from alpha.test");
+  return context.text(greet(env.GREETING, "alpha.test"));
+});

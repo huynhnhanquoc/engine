@@ -1,0 +1,13 @@
+// "/same": console and Date are built once for the site at boot. A request reads the very values this file
+// read when it ran at boot, frozen as every builtin is: a write to either is the TYPE error. (Object.isFrozen of a
+// value the engine froze has no answer, JavaScript leaving it open, since 19/11/2026.)
+import * as router from "kitwork/router";
+
+const bootConsole = console;
+const bootDate = Date;
+
+router.get((context) => context.json({
+  console: bootConsole === console,
+  date: bootDate === Date,
+  frozen: safe(() => { console.x = 1; }).error?.code === "TYPE" && safe(() => { Date.y = 1; }).error?.code === "TYPE"
+}));

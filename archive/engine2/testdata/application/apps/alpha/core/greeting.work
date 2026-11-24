@@ -1,0 +1,2 @@
+// A library of the app, imported from any site of it as "app/core/greeting.work".
+export const greet = (greeting, site) => greeting + " from " + site;

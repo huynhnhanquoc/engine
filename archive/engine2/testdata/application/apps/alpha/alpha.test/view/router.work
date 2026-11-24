@@ -1,0 +1,4 @@
+// "/view": context.view draws content.ui with what it gives the page (library/ui, slice 1).
+import * as router from "kitwork/router";
+
+router.get((context) => context.title("View").view({ name: "alpha" }));

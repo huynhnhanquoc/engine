@@ -1,0 +1,14 @@
+// application.work of engine2's test app (test/application): the host's manifest, one call a line, as
+// D:/project/kitwork/application.work is written. Two apps, alpha with one site in Asia/Ho_Chi_Minh and
+// beta with one site in UTC, so the tests see each site keep its console, its clock and its environment.
+//
+// The env files are named host.env, app.env and site.env, not .env: a .env is never committed (.gitignore),
+// and file.env reads a file of any name (docs/KITWORK_ENVIRONMENT.md mục 1).
+import * as app from "kitwork/application";
+import * as file from "kitwork/file";
+
+const env = file.env("./host.env");
+
+app.root("apps");
+app.website({ hostname: env.SITE_HOSTNAME || "alpha.test", port: env.PORT || 8080, allowLocal: env.ALLOW_LOCAL ?? false });
+app.run();

@@ -1,0 +1,1 @@
+(function(){var e={get text(){return window.kitwork.reader.text},say:function(e){window.kitwork.reader.say(e)}};window.kitwork.component("reader",e)})()

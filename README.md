@@ -14,6 +14,9 @@ being written again.
 | `archive/v0.2/` | The second engine, Go module `github.com/kitwork/engine2`, as one commit without its history. Its documentation is in `archive/v0.2/docs/`. |
 | the root | The engine being written again, Go module `github.com/huynhnhanquoc/engine`. It is not finished and nothing runs on it yet. Its rules, and what is done and not done, are in `blueprint/README.md` (in Vietnamese). |
 
+Before opening either old engine, read [archive/README.md](archive/README.md): what each one is,
+where it stopped, what was tried and why it was left.
+
 The folders are named by version. The first engine is 0.1, as its tags say, and the second is 0.2.
 The engine being written again becomes 1.0 when it is complete.
 

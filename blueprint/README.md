@@ -460,6 +460,20 @@ một câu `Snapshot.Query` đã chạy được chuẩn bị sau lần đọc �
 chốt không cho search nén qua một lần đọc còn mở. Đo xen kẽ 8 vòng hai bản test của engine3 (giữ câu / không giữ), trung
 vị: năm guard 173 → 93,5 µs, trang don-hang 245 → 153 µs; một `Read` của sqlitewire một mình 40,5 → 20,4 µs.
 
+Cache truy vấn của sqlitewire (owner 24/11/2026: "vâng làm cache truy vấn sqlitewire đi"; điều kiện thứ nhất của
+`docs/KITWORK_APPLICATION.md` mục 12; `sqlitewire/sqlite/querycache.go`): `Database.Query(ctx, sql, args…)` giữ kết quả
+theo (câu, đối số) và đưa lại tới khi một commit đổi một bảng câu ấy đọc. `list`, `first`, `count` của engine3 đi qua nó
+(`database/statement.go`); các dòng dùng chung, mỗi lượt chạy dựng giá trị của riêng nó và vẫn trả năng lượng, byte từng
+dòng. Bảng một câu đọc là SQLite nói (EXPLAIN, kể bảng dưới view và bảng của một index); câu gọi hàm ngoài danh sách tất
+định (random, datetime, …), đọc bảng ảo, tạm hay gắn thêm thì không giữ. Người ghi đánh số mỗi commit theo các bảng hook
+thấy đổi (cả bảng lịch sử không theo dõi), đánh dấu "đang đổi" trước COMMIT và đánh số sau: bản đầu đánh số sau COMMIT
+thôi, và test nhiều goroutine bắt được một lần đọc lùi (10057 rồi 10056): COMMIT cho bản chụp mới thấy trước khi số kịp
+tăng. Ghi từ tiến trình khác: PRAGMA data_version, thấy trong 1 giây. Trần 8 MiB mỗi file (`Options.QueryCache`, -1 tắt).
+Đo xen kẽ 8 vòng, hai lượt (có cache / không, cùng cache câu đã chuẩn bị), trung vị lượt hai: năm guard 137 → 33,5 µs
+(350 → 126 lần cấp phát), trang don-hang 214 → 58,7 µs; lượt này máy chậm hơn lượt đo cache câu khoảng 1,5 lần (cùng
+bản không cache: 93,5 µs khi ấy). Trong sqlitewire một lần trúng cache ≈ 170 ns. Profile năm guard: đường database của
+engine3 còn ≈ 3 µs mỗi request; phần còn lại là VM, GC của các lần cấp phát, httptest.
+
 Test (`test/host/database_test.go`): mốc nghiệm thu (don-hang, khoá đúng thứ tự); 17 câu đọc (điều kiện, biến bắt được,
 decimal, timestamp, boolean, null, `||`, first không có, count, thứ tự, bảng thứ hai, câu không đổi khi viết tiếp, hàm
 giữ trong biến); 16 câu từ chối, mỗi câu đúng mã và lời báo, lỗi dịch đúng chỗ trong hàm; `list()` quá 1000 dòng; năng

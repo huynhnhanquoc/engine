@@ -5,6 +5,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/kitwork/engine/jit/hydrate"
 )
 
 // Kitwork's countdown (decisions of 19/10/2026): time that runs out, counted from the moment play()
@@ -651,7 +653,7 @@ var countdownPartSeconds = map[string]float64{"hours": 3600, "minutes": 60, "sec
 // hours = 1, a value the compile does not know) is told: the time it adds is never seen. A value the
 // compile does not know of a part shown, and any --, are the browser's to clamp.
 func (s *countdownScope) writeProblem(node []any) string {
-	name, _ := node[1].(string)
+	name := hydrate.TargetName(node[1])
 	if len(node) == 3 && node[0] == "=" {
 		if literal, ok := node[2].([]any); ok && len(literal) == 2 && literal[0] == "#" {
 			if number, ok := literal[1].(float64); ok {
@@ -776,13 +778,13 @@ func (c *compiler) countdownEvents(n *Node, o *elemOp, events []Attr, scope *fra
 // seconds++), and which; "" for any other node.
 func countdownTarget(node []any) (name string, writes bool) {
 	switch {
-	case len(node) == 3 && node[0] == "call":
+	case len(node) == 3 && node[0] == "()":
 		if callee, ok := node[1].([]any); ok && len(callee) == 2 && callee[0] == "$" {
 			name, _ = callee[1].(string)
 		}
 		return name, false
-	case len(node) >= 2 && (node[0] == "=" || node[0] == "++" || node[0] == "--"):
-		name, _ = node[1].(string)
+	case isWriteNode(node):
+		name = hydrate.TargetRoot(node[1])
 		return name, true
 	}
 	return "", false
@@ -1248,8 +1250,14 @@ func (c *compiler) checkCountdowns() error {
 			if err != nil {
 				return
 			}
+			if base := aliasWriteBase(node); base != nil {
+				if _, alias, ok := c.countdownAlias(base, use.frame); ok {
+					err = toastError(use, "%s: không ghi trực tiếp qua alias của countdown; đặt thời gian bằng hours, minutes, seconds bên trong <countdown>", alias)
+					return
+				}
+			}
 			switch {
-			case len(node) == 4 && node[0] == "()":
+			case len(node) == 4 && node[0] == "(.)":
 				s, alias, ok := c.countdownAlias(node[1], use.frame)
 				if !ok {
 					return

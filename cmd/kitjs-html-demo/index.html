@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KitJS — HTML binding prototype</title>
+</head>
+<body>
+  <main data-kitwork-component="html-playground" class="mx-auto max-w-4xl space-y-6 p-6">
+    <h1>KitJS: text và HTML</h1>
+    <p>Sửa nội dung để xem cùng một giá trị qua hai kiểu binding.</p>
+    <p>
+      <button type="button" data-kitwork-event="click: example()">Nội dung mẫu</button>
+      <button type="button" data-kitwork-event="click: attack()">Thử script và directive</button>
+      <button type="button" data-kitwork-event="click: clear()">Xóa</button>
+    </p>
+    <p><label for="source">Nội dung HTML</label></p>
+    <textarea id="source" rows="10" cols="80" spellcheck="false" data-kitwork-bind="value: content"></textarea>
+    <section class="space-y-3">
+      <h2>html: content</h2>
+      <div data-kitwork-bind="html: content"></div>
+    </section>
+    <section class="space-y-3">
+      <h2>text: content</h2>
+      <pre data-kitwork-bind="text: content"></pre>
+    </section>
+    <p>Prototype giữ một tập thẻ nội dung nhỏ. Style, ID, form, script và directive trong nội dung được chèn đều bị bỏ.</p>
+  </main>
+  <script src="/demo.js" defer></script>
+</body>
+</html>

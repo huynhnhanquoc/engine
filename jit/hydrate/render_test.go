@@ -175,9 +175,9 @@ func TestRuntimeEmbedded(t *testing.T) {
 		// remembered in memory (clientOwned), not by an attribute
 		"clientOwned", "kernelUI",
 		// scopes: the boundary attribute, the resolver, and the page-scope opcode
-		"data-kitwork-scope", "scopeFor", `"=$"`,
+		"data-kitwork-scope", "scopeFor", "function reference(x, s)",
 		// blueprint grammar: object/array/lambda/sequence/call ops + tools + boundary modes
-		`"{}"`, `"[]"`, `"=>"`, `"call"`, "function lambda(x, s)", "tryArrowParams", "boundaryScope", "kitwork.run",
+		`"{}"`, `"[]"`, `"=>"`, `"()"`, "function lambda(x, s)", "tryArrowParams", "boundaryScope", "kitwork.run",
 		// registered components: register fn, activation attr, blueprint registry, method this-bind
 		"kitwork.component", "data-kitwork-component", "seedComponent", ".test(fn) ? undefined : s, fargs)",
 		// a lambda is a function a native method calls back, walking its tree in the calling scope; every

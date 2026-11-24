@@ -610,7 +610,7 @@ func tabName(ir any) (string, bool) {
 // selectCall reports whether an expression is a bare call of select.
 func selectCall(ir any) bool {
 	node, ok := ir.([]any)
-	if !ok || len(node) != 3 || node[0] != "call" {
+	if !ok || len(node) != 3 || node[0] != "()" {
 		return false
 	}
 	callee, ok := node[1].([]any)

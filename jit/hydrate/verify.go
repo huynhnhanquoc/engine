@@ -129,10 +129,11 @@ func firstWrite(node any) string {
 	if !ok || len(parts) == 0 {
 		return ""
 	}
-	switch op, _ := parts[0].(string); op {
-	case "=", "=$", "++", "--", "++$", "--$":
-		name, _ := parts[1].(string)
-		return name
+	if target, writes := WriteTarget(parts); writes {
+		if name := TargetRoot(target); name != "" {
+			return name
+		}
+		return "member"
 	}
 	for _, child := range parts[1:] {
 		if name := firstWrite(child); name != "" {

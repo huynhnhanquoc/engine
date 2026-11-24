@@ -137,57 +137,11 @@ func (m *machine) eval(f *frame, x any) (any, error) {
 	case "$":
 		name, _ := arr[1].(string)
 		return m.readName(f, name), nil
-	case "=", "=$":
-		// The lexical write lands in the parameter it names, else in the page scope; $.name = v always
-		// in the page scope.
-		name, _ := arr[1].(string)
-		if blockedKey(name) {
-			return Undefined, nil
-		}
-		v, err := m.eval(f, arr[2])
-		if err != nil {
-			return nil, err
-		}
-		if op == "=$" {
-			m.root[name] = v
-		} else {
-			f.assign(name, v)
-		}
-		return v, nil
-	case "++", "--", "++$", "--$":
-		name, _ := arr[1].(string)
-		if blockedKey(name) {
-			return Undefined, nil
-		}
-		// the name read as the kernel reads it: $.name off the page object, a bare name through the
-		// scope (a global, else 0); then Number of it, a value that is not there 0
-		var was any
-		if len(op) == 3 {
-			v, err := m.get(f, m.root, name)
-			if err != nil {
-				return nil, err
-			}
-			was = v
-		} else {
-			was = m.readName(f, name)
-		}
-		old, err := m.toNumber(f, present(was))
-		if err != nil {
-			return nil, err
-		}
-		next := old + 1
-		if op[:2] == "--" {
-			next = old - 1
-		}
-		if len(op) == 3 {
-			m.root[name] = next
-		} else {
-			f.assign(name, next)
-		}
-		if prefix, _ := arr[2].(bool); prefix {
-			return next, nil
-		}
-		return old, nil
+	case "=", "+=", "-=", "*=", "/=", "%=", "&&=", "||=", "??=":
+		return m.assign(f, op, arr[1], arr[2])
+	case "++", "--":
+		prefix, _ := arr[2].(bool)
+		return m.update(f, op, arr[1], prefix)
 	case "?":
 		c, err := m.eval(f, arr[1])
 		if err != nil {
@@ -207,7 +161,7 @@ func (m *machine) eval(f *frame, x any) (any, error) {
 			return Undefined, nil
 		}
 		return m.get(f, o, name)
-	case "idx":
+	case "[.]":
 		o, err := m.eval(f, arr[1])
 		if err != nil {
 			return nil, err
@@ -228,7 +182,7 @@ func (m *machine) eval(f *frame, x any) (any, error) {
 			return Undefined, nil
 		}
 		return m.get(f, o, name)
-	case "()":
+	case "(.)":
 		o, place, err := m.receiver(f, arr[1])
 		if err != nil {
 			return nil, err
@@ -327,7 +281,7 @@ func (m *machine) eval(f *frame, x any) (any, error) {
 			}
 		}
 		return v, nil
-	case "call":
+	case "()":
 		callee, err := m.eval(f, arr[1])
 		if err != nil {
 			return nil, err
@@ -481,7 +435,7 @@ func (m *machine) receiver(f *frame, x any) (any, func(any), error) {
 			return m.readName(f, name), func(v any) { f.assign(name, v) }, nil
 		}
 	}
-	if len(node) == 3 && (node[0] == "." || node[0] == "idx") {
+	if len(node) == 3 && (node[0] == "." || node[0] == "[.]") {
 		// read as eval reads a member or an item, in the same order and on the same budget
 		m.budget--
 		if m.budget < 0 {
@@ -492,7 +446,7 @@ func (m *machine) receiver(f *frame, x any) (any, func(any), error) {
 			return nil, nil, err
 		}
 		key, _ := node[2].(string)
-		if node[0] == "idx" {
+		if node[0] == "[.]" {
 			k, err := m.eval(f, node[2])
 			if err != nil {
 				return nil, nil, err

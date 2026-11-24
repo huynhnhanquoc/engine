@@ -446,7 +446,7 @@ func walkIR(ir any, fn func([]any)) {
 // act(notice.id) — into the name of what it calls, "" for anything else.
 func toastItemCall(ir any, item string) string {
 	node, ok := ir.([]any)
-	if !ok || len(node) != 3 || node[0] != "call" {
+	if !ok || len(node) != 3 || node[0] != "()" {
 		return ""
 	}
 	callee, ok := node[1].([]any)
@@ -589,7 +589,11 @@ func (c *compiler) checkToastCalls() error {
 				return
 			}
 			switch {
-			case len(node) == 4 && node[0] == "()":
+			case isWriteNode(node) && aliasWriteBase(node) != nil:
+				if alias, ok := toastAlias(aliasWriteBase(node), use.frame); ok {
+					err = toastError(use, "%s: không ghi trực tiếp qua alias của toast; dùng các lệnh thông báo", alias)
+				}
+			case len(node) == 4 && node[0] == "(.)":
 				alias, ok := toastAlias(node[1], use.frame)
 				if !ok {
 					return

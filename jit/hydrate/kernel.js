@@ -172,8 +172,8 @@
       }
       var two = s.slice(i, i + 2);
       var three = s.slice(i, i + 3); // longest match first: `===` must not lex as `==` + `=`
-      if (three === "===" || three === "!==") { out.push({ t: "op", v: three, p: i }); i += 3; continue; }
-      if (two === "==" || two === "!=" || two === ">=" || two === "<=" || two === "&&" || two === "||" || two === "=>" || two === "++" || two === "--" || two === "??" ||
+      if (three === "===" || three === "!==" || three === "&&=" || three === "||=" || three === "??=") { out.push({ t: "op", v: three, p: i }); i += 3; continue; }
+      if (two === "==" || two === "!=" || two === ">=" || two === "<=" || two === "&&" || two === "||" || two === "=>" || two === "++" || two === "--" || two === "??" || two === "+=" || two === "-=" || two === "*=" || two === "/=" || two === "%=" ||
         (two === "?." && !/[0-9]/.test(s.charAt(i + 2)))) { out.push({ t: "op", v: two, p: i }); i += 2; continue; }
       if ("+-*/%<>!?:().,={}[];".indexOf(c) >= 0) { out.push({ t: "op", v: c, p: i }); i++; continue; }
       throw new Error("hydrate: unexpected character '" + c + "'");
@@ -184,17 +184,16 @@
   }
 
   function parse(toks) {
-    var pos = 0;
+    var pos = 0, optionalTargets = new Set();
     function peek() { return toks[pos]; }
     function next() { return toks[pos++]; }
     function eat(v) { if (peek().v !== v) throw new Error("hydrate: expected " + v); next(); }
     function assign() {
       var left = ternary();
-      if (peek().v === "=") {
-        next(); var val = assign();
-        if (left instanceof Array && left[0] === "$" && left[1] !== "$") return ["=", left[1], val];
-        if (left instanceof Array && left[0] === "." && left[1] instanceof Array && left[1][0] === "$" && left[1][1] === "$") return ["=$", left[2], val];
-        throw new Error("hydrate: bad assignment");
+      if (assignmentOp(peek().v)) {
+        var op = next().v;
+        if (!assignable(left)) throw new Error("hydrate: bad assignment target");
+        return [op, left, assign()];
       }
       return left;
     }
@@ -219,14 +218,13 @@
       if (v === "!" || v === "-" || v === "+") { next(); return ["u" + v, unary()]; }
       return postfix();
     }
-    // ++/-- take the targets `=` takes — a name, or $.name — and nothing else: obj.count++ is out
-    // for the same reason obj.count = v is. A name is its own op rather than sugar for
-    // count = count + 1 because the value is coerced to a NUMBER first: "5"++ is 6, where the
-    // assignment would have concatenated it into "51".
+    function assignable(target) {
+      return target instanceof Array && !optionalTargets.has(target) &&
+        (target[0] === "$" && target[1] !== "$" || target[0] === "." || target[0] === "[.]");
+    }
     function update(op, target, prefix) {
-      if (target instanceof Array && target[0] === "$" && target[1] !== "$") return [op, target[1], prefix];
-      if (target instanceof Array && target[0] === "." && target[1] instanceof Array && target[1][0] === "$" && target[1][1] === "$") return [op + "$", target[2], prefix];
-      throw new Error("hydrate: " + op + " needs a name — count" + op + " or $.count" + op);
+      if (!assignable(target)) throw new Error("hydrate: " + op + " needs a writable name or member");
+      return [op, target, prefix];
     }
     function callArgs() {
       var args = [];
@@ -235,23 +233,24 @@
       return args;
     }
     function postfix() {
-      var e = primary();
+      var e = primary(), optional = false;
       for (; ;) {
         // a?.b, a?.[k], f?.() read as a.b, a[k], f(): every access is null-safe already.
-        if (peek().v === "?.") { next(); if (peek().v !== "(" && peek().v !== "[") { pos--; toks[pos] = { t: "op", v: "." }; } continue; }
+        if (peek().v === "?.") { optional = true; next(); if (peek().v !== "(" && peek().v !== "[") { pos--; toks[pos] = { t: "op", v: "." }; } continue; }
         // A name follows a dot, as in JavaScript: o., o.) and o.'a' are refused (16/10/2026: o. read
         // member "" on the server and threw here on .v of nothing).
         if (peek().v === ".") { next(); if (peek().t !== "id") eat("name"); e = [".", e, next().v]; continue; }
         // A call of a member keeps what it was read from as this, however it was read: o.m(), o[k](),
         // o.m?.() and (o.m)() all call m on o, as JavaScript does (16/10/2026: o[k]() and o.m?.()
         // called it on the scope). A computed key rides as its expression.
-        if (peek().v === "(") { next(); e = e[0] === "." || e[0] === "idx" ? ["()", e[1], e[2], callArgs()] : ["call", e, callArgs()]; continue; }
+        if (peek().v === "(") { next(); e = e[0] === "." || e[0] === "[.]" ? ["(.)", e[1], e[2], callArgs()] : ["()", e, callArgs()]; continue; }
         // a[b]: the key is any expression — items[1], items[i], map[key]. Same read as a.name once
         // the key is known; a blocked name reads as undefined, as it does after a dot.
-        if (peek().v === "[") { next(); var key = assign(); eat("]"); e = ["idx", e, key]; continue; }
+        if (peek().v === "[") { next(); var key = assign(); eat("]"); e = ["[.]", e, key]; continue; }
         break;
       }
       // count++ binds once to the left-hand side just read: count++++ is an error, as in JavaScript.
+      if (optional) optionalTargets.add(e);
       if (peek().v === "++" || peek().v === "--") return update(next().v, e, false);
       return e;
     }
@@ -431,6 +430,39 @@
   // propertyKey is a key as JavaScript makes it of a value: a number itself, anything else its text, so
   // keys[null] reads keys["null"] (16/10/2026: it read nothing); o[k] and o[k]() read alike.
   function propertyKey(k) { return typeof k === "number" ? k : String(k); }
+  function assignmentOp(op) { return op === "=" || op === "+=" || op === "-=" || op === "*=" || op === "/=" || op === "%=" || op === "&&=" || op === "||=" || op === "??="; }
+  var WRITE_NOTIFY = Symbol("kit:write");
+  function reference(x, s) {
+    var o, k;
+    if (x[0] === "$" && x[1] !== "$") { if (blockedKey(x[1])) return null; o = s; k = x[1]; }
+    else if (x[0] === "." || x[0] === "[.]") {
+      o = run(x[1], s);
+      k = x[0] === "." ? x[2] : propertyKey(run(x[2], s));
+    } else throw new TypeError("hydrate: invalid assignment target");
+    if (blockedKey(k)) throw new TypeError("hydrate: blocked assignment key");
+    return { o: o, k: k };
+  }
+  function writeReference(ref, value, target, s) {
+    var o = ref.o, k = ref.k, written = value;
+    if (o == null || typeof o !== "object" || o === Math || o === JSON) throw new TypeError("hydrate: target is not a writable object");
+    if (o instanceof Array) {
+      var key = String(k), index = /^(0|[1-9][0-9]*)$/.test(key) && Number(key) < 4294967295;
+      if (key !== "length" && !index) throw new TypeError("hydrate: array assignment needs an index or length");
+      if (key === "length") {
+        written = Number(value);
+        if (!(written >= 0 && written <= 1048576 && written % 1 === 0)) throw new RangeError("Invalid array length");
+      } else if (Number(key) >= 1048576 || o.length > 1048576) throw new RangeError("Invalid array length");
+    }
+    if (!Reflect.set(o, k, written)) throw new TypeError("hydrate: assignment target is read-only");
+    wrote();
+    var notify = s[WRITE_NOTIFY];
+    if (typeof notify === "function") {
+      var root = target;
+      while (root[0] === "." || root[0] === "[.]") root = root[1];
+      notify(root[0] === "$" ? root[1] : null);
+    }
+    return value;
+  }
   function run(x, s) {
     if (evalDepth === 0) evalRemaining = 10000;
     evalRemaining--;
@@ -450,14 +482,23 @@
     var op = x[0];
     if (op === "#") return x[1];
     if (op === "$") return s[x[1]];
-    if (op === "=") { if (blockedKey(x[1])) return undefined; var v = run(x[2], s); s[x[1]] = v; return v; }
-    if (op === "=$") { if (blockedKey(x[1])) return undefined; var vp = run(x[2], s); s["$"][x[1]] = vp; return vp; }
-    if (op === "++" || op === "--" || op === "++$" || op === "--$") {
-      if (blockedKey(x[1])) return undefined;
-      var home = op.length === 3 ? s["$"] : s; // the page-scope form writes where $.name = v does
-      var was = toNumber(home[x[1]]);
-      var now = op.charAt(0) === "+" ? was + 1 : was - 1;
-      home[x[1]] = now;
+    if (assignmentOp(op)) {
+      var ref = reference(x[1], s), old, value;
+      if (!ref) return undefined;
+      if (op !== "=") {
+        old = ref.o[ref.k];
+        if (op === "&&=" && !old || op === "||=" && old || op === "??=" && old != null) return old;
+      }
+      value = run(x[2], s);
+      if (op !== "=" && op !== "&&=" && op !== "||=" && op !== "??=") value = run([op.charAt(0), ["#", old], ["#", value]], s);
+      return writeReference(ref, value, x[1], s);
+    }
+    if (op === "++" || op === "--") {
+      var home = reference(x[1], s);
+      if (!home) return undefined;
+      var was = toNumber(home.o[home.k]);
+      var now = op === "++" ? was + 1 : was - 1;
+      writeReference(home, now, x[1], s);
       return x[2] ? now : was;
     }
     if (op === "{}") {
@@ -473,7 +514,7 @@
       for (var si = 1; si < x.length; si++) sv = run(x[si], s);
       return sv;
     }
-    if (op === "call") {
+    if (op === "()") {
       var fn = run(x[1], s);
       var fargs = x[2].map(function (y) { return run(y, s); });
       if (fn === Number || fn === isNaN || fn === isFinite || fn === parseInt || fn === parseFloat) fargs = fargs.map(present);
@@ -484,7 +525,7 @@
       return typeof fn === "function" ? call(fn, /\[native code]\s*}$/.test(fn) ? undefined : s, fargs) : undefined;
     }
     if (op === "?") return run(x[1], s) ? run(x[2], s) : run(x[3], s);
-    if (op === "idx") {
+    if (op === "[.]") {
       var io = run(x[1], s), ik = run(x[2], s);
       return io == null || blockedKey(ik = propertyKey(ik)) ? undefined : io[ik];
     }
@@ -492,7 +533,7 @@
       var o = run(x[1], s);
       return (o == null || blockedKey(x[2])) ? undefined : o[x[2]];
     }
-    if (op === "()") {
+    if (op === "(.)") {
       var oo = run(x[1], s), mk = x[2] instanceof Array ? run(x[2], s) : x[2];
       if (oo == null || blockedKey(mk = propertyKey(mk))) return undefined;
       var a = x[3].map(function (y) { return run(y, s); });
@@ -629,6 +670,12 @@
     if (el.textContent !== v) el.textContent = v;
   }
   function writeBinding(el, name, v) {
+    if (name === "html") {
+      var html = kitwork.module("html");
+      if (!html) throw new Error("hydrate: html binding needs directives/html.js");
+      html.write(el, v);
+      return;
+    }
     if (/^on/.test(name) || /^data-kit/.test(name) || name === "style" || name === "srcdoc") return;
     var reflected = REFLECTED_BOOLEAN[name];
     if (reflected) {
@@ -899,7 +946,7 @@
       var proxy = scopeFor(b);
       var result;
       // a call the component's scope makes: a JS init gets this = the scope, a lambda init runs in it
-      if (typeof fn === "function") result = run(["call", ["#", fn], [["#", contextOf(b)]]], proxy);
+      if (typeof fn === "function") result = run(["()", ["#", fn], [["#", contextOf(b)]]], proxy);
       observeEffect(result, proxy);
     } catch (e) { reportError(e, b, "init"); }
   }
@@ -1355,6 +1402,17 @@
   function cleanupElement(element) {
     var store = element && element[stateKey];
     if (!store) return;
+    // Content replacement may remove a host after this pass rebuilt the registry. Drop its
+    // strong reference now, rather than waiting for another render to notice the removal.
+    if (store.seeded && store.scopeProxy) {
+      var tag = hostOf(element), active = tag && activeComponents[tag.name];
+      if (active === store.scopeProxy) delete activeComponents[tag.name];
+      else if (active instanceof Array) {
+        active = active.filter(function (instance) { return instance !== store.scopeProxy; });
+        if (!active.length) delete activeComponents[tag.name];
+        else activeComponents[tag.name] = active.length === 1 ? active[0] : active;
+      }
+    }
     // Ownership is the test, not identity: reading aliases[name] now resolves the boundary's scope
     // proxy, which is never the raw scope object this store holds.
     if (store.componentAlias && aliasOwners[store.componentAlias] === element) {
@@ -1694,21 +1752,22 @@
   // compile(src) → IR array — the SAME compiler the server runs, exposed so tools (a playground,
   // a debugger) can show the bytecode a source expression becomes. No eval; pure data out.
   // run(ir[, scope]) walks an IR tree — the walker itself, for tools and tests.
-  function publicScope(s) {
-    if (!s || s === scope) return scope;
+  function publicScope(s, changed) {
+    if ((!s || s === scope) && !changed) return scope;
+    s = s || scope;
     return new Proxy(s, {
       get: function (target, key) {
+        if (key === WRITE_NOTIFY) return changed;
         if (key === "$") return target;
         return has(target, key) ? target[key] : globalOrZero(key);
       },
       set: function (target, key, value) {
-        target[key] = value;
-        return true;
+        return Reflect.set(target, key, value);
       }
     });
   }
   kitwork.compile = function (src) { return parse(lex(src)); };
-  kitwork.run = function (ir, s) { return run(ir, publicScope(s)); };
+  kitwork.run = function (ir, s, changed) { return run(ir, publicScope(s, changed)); };
   kitwork.scope = scope;
   kitwork.scopeFor = scopeFor;
   kitwork.render = render;

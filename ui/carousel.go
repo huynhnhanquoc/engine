@@ -458,7 +458,7 @@ func goArgument(ir any, written string) (string, bool) {
 
 // bareCall reports whether an expression node is a call of a bare name: name(…).
 func bareCall(node []any, name string) bool {
-	if len(node) != 3 || node[0] != "call" {
+	if len(node) != 3 || node[0] != "()" {
 		return false
 	}
 	callee, ok := node[1].([]any)
@@ -475,7 +475,7 @@ func (c *compiler) checkCarousels() {
 		if s.alias != "" {
 			for _, use := range c.aliasExprs {
 				walkIR(use.e.ir, func(node []any) {
-					if len(node) != 4 || node[0] != "()" {
+					if len(node) != 4 || node[0] != "(.)" {
 						return
 					}
 					ref, ok := node[1].([]any)

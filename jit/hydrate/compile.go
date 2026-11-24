@@ -5,44 +5,28 @@
 // data-kit-* attributes and from the values of the eight grouped data-kitwork-* attributes the engine
 // writes (pairs.go). The IR is the server's own form — verification, eval, tests.
 //
-// IR shapes (each is a JSON array):
+// IR shapes (each is a JSON array; full contract: IR.md):
 //
-//	["#", literal]            literal (number | string | bool | null)
-//	["$", "name"]            variable read from scope ("$" itself = the PAGE scope object)
-//	[op, left, right]        binary: + - * / % > < >= <= == != === !== && || ??
-//	                         (== and != coerce like JavaScript; === and !== are strict; ?? takes
-//	                         the right side only when the left is null or undefined)
-//	                         a?.b, a?.[k] and f?.() compile to the plain ".", "idx" and "call"
-//	                         (o.m?.() to "()"): every access is already null-safe, so the ? adds
-//	                         nothing to keep
-//	["u!", e] / ["u-", e]    unary not / negate; ["u+", e] is Number(e), as +e in JavaScript
-//	                         (16/10/2026)
-//	["?", c, a, b]           ternary c ? a : b
-//	["=", "name", value]     assignment to a scope variable (lexical: owner scope, else nearest)
-//	["=$", "name", value]    assignment to the PAGE scope: $.name = value — the same $ the
-//	                         server template language uses for its root data
-//	["++", "name", prefix]   update: count++ / ++count, and ["--", …] for the decrement; the page-
-//	["++$", "name", prefix]  scope form is $.count++. prefix is true for ++count. The value is
-//	                         coerced to a NUMBER first, exactly like JavaScript — so "5"++ is 6,
-//	                         where count = count + 1 would have made it "51". That difference is
-//	                         why this is its own op rather than sugar for the assignment. Postfix
-//	                         yields the old number, prefix the new one. Targets are the ones `=`
-//	                         accepts: a name, or $.name.
-//	[".", obj, "name"]       member access obj.name
-//	["idx", obj, key]        index access obj[key] — key is an expression (number or string)
-//	["()", obj, "name", []]  method call obj.name(args...); ["()", obj, key, []] with key an
-//	                         expression is obj[key](args...) (16/10/2026)
-//	["{}", [[k, v], …]]      object literal { count: 5, open: false } — a BLUEPRINT, parsed not
-//	                         eval'd (objects allow a trailing comma, matching the server language)
-//	["[]", [e, …]]           array literal [1, 2, 3] (arrays REJECT a trailing comma, ditto)
-//	[";", e1, e2, …]         sequence: count = 5; open = true — evaluates left to right,
-//	                         yields the last value
-//	["=>", [params], body, source]
-//	                         lambda: () => count = count + 1 — a NAMED IR TREE, i.e. code-as-data.
-//	                         The body is this same grammar; parens are required around params.
-//	                         source is the lambda as written, its text as JavaScript gives a
-//	                         function's (16/10/2026)
-//	["call", callee, [args]] bare call: inc() — callee must evaluate to a lambda value
+//	["#", literal]                  number, string, bool or null
+//	["$", name]                     scope read; the name "$" reads the page scope
+//	[".", object, name]             fixed member read
+//	["[.]", object, key]            computed member read
+//	["[]", [expression, ...]]       array literal
+//	["{}", [[key, expression], ...]] object literal
+//	["()", callee, [args]]          bare function call
+//	["(.)", object, nameOrKey, [args]] method call retaining its receiver
+//	["=>", [params], body, source]  lambda with its original source text
+//	["u!" | "u+" | "u-", expression] unary operator
+//	[op, left, right]               binary: + - * / % > < >= <= == != === !== && || ??
+//	["?", condition, yes, no]       conditional, evaluating only the chosen branch
+//	[op, target, value]             assignment: = += -= *= /= %= &&= ||= ??=
+//	["++" | "--", target, prefix]   numeric update; prefix selects new rather than old value
+//	[";", expression, ...]          sequence, yielding the last value
+//
+// A target is a scope read or member node, never $ itself or an optional chain. It resolves once,
+// before the RHS, and compound assignment reads its old value once. Optional reads a?.b, a?.[k],
+// f?.() lower to the plain read/call nodes: reads are already null-safe in this expression language.
+// The parser remembers optional target provenance only until compilation finishes.
 //
 // The line the grammar never crosses is ARBITRARY CODE: a lambda here is not JavaScript — it is a
 // compiled IR tree walked by the same budgeted walker as everything else. Nothing is ever handed
@@ -185,14 +169,14 @@ func lex(s string) ([]tok, error) {
 		default:
 			// Longest match first: `===` must not lex as `==` + `=`.
 			if i+2 < n {
-				if three := s[i : i+3]; three == "===" || three == "!==" {
+				if three := s[i : i+3]; three == "===" || three == "!==" || three == "&&=" || three == "||=" || three == "??=" {
 					out = append(out, tok{"op", three, i})
 					i += 3
 					continue
 				}
 			}
 			if i+1 < n {
-				if two := s[i : i+2]; two == "==" || two == "!=" || two == ">=" || two == "<=" || two == "&&" || two == "||" || two == "=>" || two == "++" || two == "--" || two == "??" ||
+				if two := s[i : i+2]; two == "==" || two == "!=" || two == ">=" || two == "<=" || two == "&&" || two == "||" || two == "=>" || two == "++" || two == "--" || two == "??" || two == "+=" || two == "-=" || two == "*=" || two == "/=" || two == "%=" ||
 					// ?. is optional chaining — unless a digit follows: a ? .5 : 1 is a ternary.
 					(two == "?." && !(i+2 < n && s[i+2] >= '0' && s[i+2] <= '9')) {
 					out = append(out, tok{"op", two, i})
@@ -300,6 +284,8 @@ type parser struct {
 	pos  int
 	// depth is how deep the parser recurses now (nestingLimit).
 	depth int
+	// Parse-local provenance: optional reads lower to plain IR, but cannot be write targets.
+	optional map[*any]bool
 }
 
 // nestingLimit bounds how deep an expression may nest, as the server language's compiler does
@@ -405,28 +391,16 @@ func (p *parser) assign() (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	if p.peek().v == "=" {
+	if op := p.peek().v; IsAssignmentOp(op) {
 		p.next()
+		if !p.assignable(left) {
+			return nil, errors.New("hydrate: invalid assignment target")
+		}
 		val, err := p.assign()
 		if err != nil {
 			return nil, err
 		}
-		if arr, ok := left.([]any); ok {
-			if len(arr) == 2 && arr[0] == "$" {
-				if arr[1] == "$" {
-					return nil, errors.New("hydrate: cannot assign to $ itself")
-				}
-				return []any{"=", arr[1], val}, nil
-			}
-			// $.name = value — the explicit page-scope address. The ONLY member target that is
-			// assignable; general obj.prop assignment stays out of the grammar.
-			if len(arr) == 3 && arr[0] == "." {
-				if inner, ok := arr[1].([]any); ok && len(inner) == 2 && inner[0] == "$" && inner[1] == "$" {
-					return []any{"=$", arr[2], val}, nil
-				}
-			}
-		}
-		return nil, errors.New("hydrate: invalid assignment target")
+		return []any{op, left, val}, nil
 	}
 	return left, nil
 }
@@ -492,7 +466,7 @@ func (p *parser) unary() (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return updateNode(v, target, true)
+		return p.updateNode(v, target, true)
 	}
 	if v := p.peek().v; v == "!" || v == "-" || v == "+" {
 		// +x is Number(x), as in JavaScript (16/10/2026, the owner's E2)
@@ -535,9 +509,11 @@ func (p *parser) postfix() (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	optional := false
 	for {
 		// a?.b, a?.[k], f?.() — the same reads as a.b, a[k], f(): every access is null-safe already.
 		if p.peek().v == "?." {
+			optional = true
 			p.next()
 			if v := p.peek().v; v == "(" || v == "[" {
 				continue
@@ -568,10 +544,10 @@ func (p *parser) postfix() (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			if node, ok := e.([]any); ok && len(node) == 3 && (node[0] == "." || node[0] == "idx") {
-				e = []any{"()", node[1], node[2], args}
+			if node, ok := e.([]any); ok && len(node) == 3 && (node[0] == "." || node[0] == "[.]") {
+				e = []any{"(.)", node[1], node[2], args}
 			} else {
-				e = []any{"call", e, args}
+				e = []any{"()", e, args}
 			}
 			continue
 		}
@@ -586,46 +562,51 @@ func (p *parser) postfix() (any, error) {
 			if err := p.eat("]"); err != nil {
 				return nil, err
 			}
-			e = []any{"idx", e, key}
+			e = []any{"[.]", e, key}
 			continue
 		}
 		break
+	}
+	if optional {
+		if node, ok := e.([]any); ok && len(node) > 0 {
+			if p.optional == nil {
+				p.optional = make(map[*any]bool)
+			}
+			p.optional[&node[0]] = true
+		}
 	}
 	// count++ / count-- binds to the whole left-hand side just read, once: count++++ is an error,
 	// as it is in JavaScript.
 	if v := p.peek().v; v == "++" || v == "--" {
 		p.next()
-		return updateNode(v, e, false)
+		return p.updateNode(v, e, false)
 	}
 	return e, nil
 }
 
-// updateNode builds ++/-- over a target, which must be one `=` could assign to: a scope name, or
-// the page-scope address $.name. obj.prop++ stays out for the same reason obj.prop = v does —
-// general member assignment is not in the grammar.
-func updateNode(op string, target any, prefix bool) (any, error) {
-	if arr, ok := target.([]any); ok {
-		if len(arr) == 2 && arr[0] == "$" {
-			if arr[1] == "$" {
-				return nil, errors.New("hydrate: cannot " + describeUpdate(op) + " $ itself")
-			}
-			return []any{op, arr[1], prefix}, nil
-		}
-		if len(arr) == 3 && arr[0] == "." {
-			if inner, ok := arr[1].([]any); ok && len(inner) == 2 && inner[0] == "$" && inner[1] == "$" {
-				return []any{op + "$", arr[2], prefix}, nil
-			}
-		}
+// IsAssignmentOp is shared with the UI's mutation and ownership checks.
+func IsAssignmentOp(op string) bool {
+	switch op {
+	case "=", "+=", "-=", "*=", "/=", "%=", "&&=", "||=", "??=":
+		return true
 	}
-	return nil, errors.New("hydrate: " + op + " needs a name to " + describeUpdate(op) +
-		" — count" + op + " or $.count" + op + ", not a member of an object")
+	return false
 }
 
-func describeUpdate(op string) string {
-	if op == "++" {
-		return "increment"
+func (p *parser) assignable(target any) bool {
+	node, ok := target.([]any)
+	if !ok || len(node) == 0 || p.optional[&node[0]] {
+		return false
 	}
-	return "decrement"
+	return len(node) == 2 && node[0] == "$" && node[1] != "$" ||
+		len(node) == 3 && (node[0] == "." || node[0] == "[.]")
+}
+
+func (p *parser) updateNode(op string, target any, prefix bool) (any, error) {
+	if !p.assignable(target) {
+		return nil, errors.New("hydrate: " + op + " needs a writable name or member")
+	}
+	return []any{op, target, prefix}, nil
 }
 
 func (p *parser) primary() (any, error) {

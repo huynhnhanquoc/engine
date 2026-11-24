@@ -262,22 +262,6 @@ func usedNames(ir any) []string {
 				}
 			}
 			return
-		case "=", "++", "--":
-			if len(parts) > 1 {
-				if name, ok := parts[1].(string); ok && !bound[name] {
-					add(name)
-				}
-			}
-			for _, p := range parts[2:] {
-				walk(p, bound)
-			}
-			return
-		case "=$", "++$", "--$":
-			add("$")
-			for _, p := range parts[2:] {
-				walk(p, bound)
-			}
-			return
 		case "=>":
 			if len(parts) < 3 {
 				return

@@ -73,7 +73,7 @@ var refusedCalls = []struct{ name, message string }{
 // the page shows that data.
 const safeInExpression = "biểu thức .ui không có lỗi để bắt: gọi safe(() => …) trong handler của router.get rồi đưa kết quả vào context.view({ … })"
 
-// callsName reports whether an expression's IR calls a bare name (safe, raw): ["call", ["$", name], …],
+// callsName reports whether an expression's IR calls a bare name (safe, raw): ["()", ["$", name], …],
 // outside a lambda that names a parameter so.
 func callsName(ir any, name string) bool {
 	node, ok := ir.([]any)
@@ -92,7 +92,7 @@ func callsName(ir any, name string) bool {
 	switch node[0] {
 	case "#":
 		return false // a literal: its text is data
-	case "call":
+	case "()":
 		if callee, ok := node[1].([]any); ok && len(callee) == 2 && callee[0] == "$" && callee[1] == name {
 			return true
 		}

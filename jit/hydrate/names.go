@@ -42,6 +42,13 @@ func collectReadNames(node any, bound map[string]bool, seen map[string]bool, out
 	op, _ := parts[0].(string)
 
 	switch op {
+	case "=":
+		// A plain variable assignment writes the name without reading its old value.
+		if TargetName(parts[1]) == "" {
+			collectReadNames(parts[1], bound, seen, out)
+		}
+		collectReadNames(parts[2], bound, seen, out)
+		return
 	case "#":
 		return // a literal reads nothing
 

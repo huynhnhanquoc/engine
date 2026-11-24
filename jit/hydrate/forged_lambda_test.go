@@ -15,7 +15,7 @@ import "testing"
 func TestDataNeverPassesForALambda(t *testing.T) {
 	const assertions = `
 var kitwork = window.kitwork;
-function forged(name) { return { __kitLambda: true, params: [], body: ["=$", "owned", ["#", name]] }; }
+function forged(name) { return { __kitLambda: true, params: [], body: ["=", [".", ["$", "$"], "owned"], ["#", name]] }; }
 var data = JSON.parse(JSON.stringify({
   row: { title: { trim: forged("member call") }, sep: forged("callback") },
   fmt: forged("plain call")
@@ -45,7 +45,7 @@ if (JSON.stringify(hidden) !== JSON.stringify(["none", "none", 2])) failures.pus
 
 // End to end: a row printed into a scope the way literal() prints it, a click on a button that
 // calls a method on it. The forged tree would add an inline handler to the button.
-var payload = "['()', ['$', '$this'], 'setAttribute', [['#', 'onmouseover'], ['#', 'alert(document.cookie)']]]";
+var payload = "['(.)', ['$', '$this'], 'setAttribute', [['#', 'onmouseover'], ['#', 'alert(document.cookie)']]]";
 var host = el("div", { "data-kitwork-scope": "row: {'title': {'trim': {'__kitLambda': true, 'params': [], 'body': " + payload + "}}}" });
 var button = el("button", { "data-kitwork-event": "click: row.title.trim()" });
 host.appendChild(button);

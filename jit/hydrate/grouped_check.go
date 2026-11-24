@@ -14,7 +14,7 @@ import (
 // the value to look. Every value is compiled with the Go twin of the kernel's parser; the names are
 // held to the rules the kernel applies when it writes:
 //
-//	bind   text, show, value, checked, aria-*, and plain attribute names — never on… (code), style
+//	bind   text, html (sanitized content), show, value, checked, aria-*, and plain attributes — never on… (code), style
 //	       (its own attribute), class or class.<name> (data-kitwork-class), srcdoc (a document),
 //	       data-kit… (a directive)
 //	class  the exact class name, by the splitter's name rule (letters, digits, '-', '.', '_', '+', '/',
@@ -199,7 +199,7 @@ func groupedBindNameProblem(p Pair) string {
 	name := p.Name
 	label := "data-kitwork-bind " + name
 	switch name {
-	case "text", "show", "value", "checked":
+	case "text", "html", "show", "value", "checked":
 		return ""
 	case "class":
 		return label + ": classes are toggled one by one in data-kitwork-class — active: open — so the CSS engine can see each name"

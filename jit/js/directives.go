@@ -15,9 +15,10 @@ import (
 //	data-kitwork-event="intersect-enter[.once][.half|.full][.margin(x)]: …; intersect-leave: …"
 //	                                       → directives/intersect.js
 //	data-kitwork-drag="true" | "false"         → directives/drag.js (a desktop window's own title bar)
+//	data-kitwork-bind="html: content"          → directives/html.js (inert, sanitized content)
 //
 // (data-kit-intersect, the hand-written form of template pages, went on 26/10/2026.)
-var directiveMarkers = map[string]string{"intersect": "intersect-", "drag": "data-kitwork-drag"}
+var directiveMarkers = map[string]string{"intersect": "intersect-", "drag": "data-kitwork-drag", "html": "data-kitwork-bind"}
 
 func directiveSource(name string) string {
 	if _, known := directiveMarkers[name]; !known {
@@ -45,12 +46,20 @@ func directiveAsset(name string) *Asset {
 }
 
 // directiveAssets is the directive files a page needs, in a fixed order. The page is read without
-// its examples, so a docs page that prints an intersect-enter gets no observer. The observer is asked
-// for by an event — intersect-enter or intersect-leave in a data-kitwork-event.
+// its examples, so a docs page that prints a directive gets no module for that example.
 func directiveAssets(html string) []*Asset {
 	var out []*Asset
-	for _, name := range []string{"intersect", "drag"} {
-		if name == "intersect" && groupedIntersect(html) || name == "drag" && strings.Contains(html, directiveMarkers[name]) {
+	for _, name := range []string{"intersect", "drag", "html"} {
+		var needed bool
+		switch name {
+		case "intersect":
+			needed = groupedIntersect(html)
+		case "drag":
+			needed = strings.Contains(html, directiveMarkers[name])
+		case "html":
+			needed = groupedHTML(html)
+		}
+		if needed {
 			if asset := directiveAsset(name); asset != nil {
 				out = append(out, asset)
 			}
@@ -61,6 +70,23 @@ func directiveAssets(html string) []*Asset {
 
 // groupedEventAttrRe finds a data-kitwork-event attribute; its value is read by hydrate.Pairs.
 var groupedEventAttrRe = regexp.MustCompile(`data-kitwork-event="([^"]*)"`)
+
+var groupedBindAttrRe = regexp.MustCompile(`data-kitwork-bind="([^"]*)"`)
+
+func groupedHTML(html string) bool {
+	for _, match := range groupedBindAttrRe.FindAllStringSubmatch(html, -1) {
+		pairs, err := hydrate.Pairs(htmlattr.Decode(match[1]))
+		if err != nil {
+			continue
+		}
+		for _, pair := range pairs {
+			if pair.Name == "html" {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // groupedIntersect reports whether a data-kitwork-event on the page has an intersect-enter or
 // intersect-leave pair (any modifiers after the name).

@@ -14,11 +14,11 @@ import (
 // pins what each REFUSES, because a parser that accepted too much would pass the corpus happily.
 
 var updateRefusals = []struct{ src, why string }{
-	{"obj.count++", "a member of an object — general member assignment is not in the grammar"},
+	{"obj?.count++", "optional chains cannot be write targets"},
 	{"count++++", "an update of an update — JavaScript refuses it too"},
 	{"5++", "a literal is not a place to store anything"},
 	{"$++", "the page scope itself is not a counter"},
-	{"++obj.count", "the prefix form takes the same targets as the postfix one"},
+	{"++obj?.count", "the prefix form also refuses optional targets"},
 }
 
 func TestServerRefusesWhatCannotBeUpdated(t *testing.T) {
@@ -27,9 +27,9 @@ func TestServerRefusesWhatCannotBeUpdated(t *testing.T) {
 			t.Errorf("Compile(%q) was accepted, but it is %s", c.src, c.why)
 		}
 	}
-	// The message has to point at the fix, not just at a token.
-	_, err := Compile("obj.count++")
-	if err == nil || !strings.Contains(err.Error(), "count++") {
+	// A refusal identifies the requirement rather than only the unexpected token.
+	_, err := Compile("obj?.count++")
+	if err == nil || !strings.Contains(err.Error(), "writable") {
 		t.Errorf("the refusal should show a spelling that works, got: %v", err)
 	}
 }

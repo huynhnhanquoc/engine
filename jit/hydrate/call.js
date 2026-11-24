@@ -555,6 +555,7 @@
     jobs.forEach(function (name) { isJob[name] = true; });
     var v = { state: state, runs: 0 };
     var dirty = {}, touched = [], dirtyRows = [];
+    var contentDirty = {}, keysDirty = false;
     var pageEls = {};       // mark → the element of a mark outside every row
     var pageReaders = {};   // name → marks outside every row that read it
     var rowReaders = {};    // name → marks in rows that read it
@@ -745,6 +746,18 @@
       state[name] = value;
       dirty[name] = true;
     };
+    // Interpreter writes can mutate a nested object without replacing its root. Mark readers and
+    // rows explicitly; do not assign the root to itself (that could invoke an unrelated setter).
+    function changed(name) {
+      keysDirty = true;
+      var all = name == null || name === "$" || !Object.prototype.hasOwnProperty.call(state, name);
+      (all ? Object.keys(state) : [name]).forEach(function (k) { dirty[k] = true; });
+      Object.keys(listById).forEach(function (id) {
+        var list = listById[id];
+        if (!all && (list.spec.r || []).indexOf(name) < 0) return;
+        contentDirty[id] = true; // many writes in one event still enqueue each list only once
+      });
+    }
     // a job's call began or ended: what reads the job outside every row, and in the row it was made from
     v.touch = function (name, row) {
       touched.push([name, row]);
@@ -763,7 +776,14 @@
       dirty = {};
       var jobs = touched;
       touched = [];
+      if (keysDirty && keys) keys = new WeakMap(); // local writes may have changed a key field
+      keysDirty = false;
       names.forEach(function (name) { if (listByName[name]) reconcile(listByName[name]); });
+      Object.keys(contentDirty).forEach(function (id) {
+        var list = listById[id];
+        list.order.forEach(function (key) { dirtyRows.push([list, list.rows[key]]); });
+      });
+      contentDirty = {};
       var rows = dirtyRows;
       dirtyRows = [];
       var ran = {};
@@ -829,7 +849,7 @@
           if (parts.indexOf("stop") > 0) { stop = true; if (e.stopPropagation) e.stopPropagation(); }
           current = el;
           handling = e;
-          try { kitwork.run(p.x, scopeOf(el)); }
+          try { kitwork.run(p.x, scopeOf(el), changed); }
           catch (error) { if (window.console) console.error("kitwork:", error, el); }
           finally { current = null; handling = null; }
         }

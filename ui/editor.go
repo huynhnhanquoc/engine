@@ -827,7 +827,7 @@ func (c *compiler) editorValue(n *Node, a *Attr, cx ctx) (*expr, error) {
 // its arguments.
 func editorCommand(ir any) (string, []any, bool) {
 	node, ok := ir.([]any)
-	if !ok || len(node) != 3 || node[0] != "call" {
+	if !ok || len(node) != 3 || node[0] != "()" {
 		return "", nil, false
 	}
 	callee, ok := node[1].([]any)
@@ -966,7 +966,7 @@ func (c *compiler) editorPressedWarning(n *Node, b *editorButton) {
 // what it assigns.
 func editorFormatWrite(ir any) (any, bool) {
 	node, ok := ir.([]any)
-	if !ok || len(node) != 3 || node[0] != "=" || node[1] != "format" {
+	if !ok || len(node) != 3 || node[0] != "=" || hydrate.TargetName(node[1]) != "format" {
 		return nil, false
 	}
 	return node[2], true
@@ -1105,7 +1105,7 @@ func (c *compiler) editorSelectOf(f editorFound, s *editorScope) error {
 // ($body.toggle('heading', 4)) into the method and its arguments.
 func editorAliasCall(ir any, alias string) (string, []any, bool) {
 	node, ok := ir.([]any)
-	if alias == "" || !ok || len(node) != 4 || node[0] != "()" {
+	if alias == "" || !ok || len(node) != 4 || node[0] != "(.)" {
 		return "", nil, false
 	}
 	receiver, _ := node[1].([]any)
@@ -1130,7 +1130,7 @@ func editorStrayCall(n *Node, alias, own string) (string, string, bool) {
 		return "", "", false
 	}
 	node, ok := e.ir.([]any)
-	if !ok || len(node) != 4 || node[0] != "()" {
+	if !ok || len(node) != 4 || node[0] != "(.)" {
 		return "", "", false
 	}
 	receiver, _ := node[1].([]any)
@@ -1967,13 +1967,13 @@ func editorEdits(n *Node) string {
 // editorTarget is the bare name an expression node calls or writes, and which; "" for any other node.
 func editorTarget(node []any) (name string, writes bool) {
 	switch {
-	case len(node) == 3 && node[0] == "call":
+	case len(node) == 3 && node[0] == "()":
 		if callee, ok := node[1].([]any); ok && len(callee) == 2 && callee[0] == "$" {
 			name, _ = callee[1].(string)
 		}
 		return name, false
-	case len(node) >= 2 && (node[0] == "=" || node[0] == "++" || node[0] == "--"):
-		name, _ = node[1].(string)
+	case isWriteNode(node):
+		name = hydrate.TargetRoot(node[1])
 		return name, true
 	}
 	return "", false
@@ -2193,7 +2193,11 @@ func (c *compiler) checkEditors() error {
 				return
 			}
 			switch {
-			case len(node) == 4 && node[0] == "()":
+			case isWriteNode(node) && aliasWriteBase(node) != nil:
+				if _, alias, ok := c.editorAlias(aliasWriteBase(node), use.frame); ok {
+					err = toastError(use, "%s: không ghi trực tiếp qua alias của editor; dùng các lệnh của editor", alias)
+				}
+			case len(node) == 4 && node[0] == "(.)":
 				s, alias, ok := c.editorAlias(node[1], use.frame)
 				if !ok {
 					return
@@ -2302,7 +2306,7 @@ func (s *editorScope) bindings() []binding {
 	}
 	of := func(name string, read func(richtext.Document) any) binding {
 		fn := hydrate.Func(func(in []any) any { return read(editorCleaned(stringify(arg(in, 0)))) })
-		e := &expr{source: "richtext(" + source + ")." + name, ir: []any{"call", []any{"#", fn}, args}}
+		e := &expr{source: "richtext(" + source + ")." + name, ir: []any{"()", []any{"#", fn}, args}}
 		return binding{name: name, in: &interpolation{parts: []part{{e: e}}}}
 	}
 	fixed := func(name string, v any, written string) binding {
@@ -2317,7 +2321,7 @@ func (s *editorScope) bindings() []binding {
 		of("words", func(d richtext.Document) any { return float64(d.Words) }),
 		of("characters", func(d richtext.Document) any { return float64(d.Characters) }),
 		{name: "unsaved", in: &interpolation{parts: []part{{e: &expr{source: "request.method != 'GET'",
-			ir: []any{"call", []any{"#", unsaved}, []any{[]any{"$", requestMethodName}}}}}}}},
+			ir: []any{"()", []any{"#", unsaved}, []any{[]any{"$", requestMethodName}}}}}}}},
 		fixed("open", false, "false"),
 		fixed("address", "", "''"),
 		fixed("format", s.format, quoteString(s.format)),

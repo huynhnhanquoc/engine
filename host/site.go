@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
@@ -26,13 +27,14 @@ import (
 // đầu tới nó, một lần dù nhiều request cùng tới, rồi giữ: câu hỏi 6 của docs/KITWORK_APPLICATION.md (biên dịch lúc boot)
 // còn mở, và bản thiết kế chưa nêu các site, nên engine không tự quét thư mục nào. Mỗi thư mục của site là một đường dẫn
 // (thư mục bắt đầu bằng "." hay "_" không phải, trừ .well-known); router.work của nó là một bản thiết kế
-// (blueprint/router, blueprint/README.md "Route"). Chưa có ở lát này: đoạn động {id[number]}, trang content.ui, file
-// tĩnh, thân request; route.cache được đọc và kiểm, chưa giữ câu trả lời nào (một dòng log).
+// (blueprint/router, blueprint/README.md "Route"). File tĩnh của site: static.go (lát 4). Chưa có: đoạn động
+// {id[number]}, trang content.ui, thân request; route.cache được đọc và kiểm, chưa giữ câu trả lời nào (một dòng log).
 
 // site là một thư mục site đã biên dịch: cây thư mục của nó.
 type site struct {
 	folder string // "apps/03dt/shop.vn", tính từ thư mục manifest
 	root   *node
+	static siteStatic
 }
 
 // node là một thư mục của site: các chuỗi all(…) và methods(…) của router.work của nó, các cửa, các thư mục con.
@@ -136,7 +138,13 @@ func (w *Website) compileSite(folder string) (*site, error) {
 	for _, file := range l.cached {
 		fmt.Fprintf(w.log(), "website: %s: route.cache(…) in %s is not served yet: its GET door runs on every request\n", folder, file)
 	}
-	return &site{folder: folder, root: root}, nil
+	s := &site{folder: folder, root: root, static: siteStatic{dir: filepath.Join(w.folder, filepath.FromSlash(folder))}}
+	if w.warms(folder) {
+		s.static.kept = &keptFiles{every: w.StaticCheck}
+		held, size := s.static.warm()
+		fmt.Fprintf(w.log(), "website: %s: warm: %d files in memory (%d KB)\n", folder, held, (size+1023)/1024)
+	}
+	return s, nil
 }
 
 // node biên dịch thư mục rel (tính từ gốc app) và các thư mục con của nó.
@@ -313,6 +321,17 @@ func (w *Website) serveSite(s *site, c *requestContext, memory, energy int64) an
 	if method == "head" {
 		method = "get"
 	}
+	if method == "get" {
+		if name, ok := staticName(c.request.http.URL.Path); ok {
+			if file := s.static.open(name); file != nil {
+				if a, stop := w.staticRules(s, c, name, memory, energy); stop {
+					file.close()
+					return a
+				}
+				return answer{status: http.StatusOK, file: file}
+			}
+		}
+	}
 	var segments []string
 	for _, segment := range strings.Split(c.request.http.URL.Path, "/") {
 		if segment != "" {
@@ -365,6 +384,41 @@ func (w *Website) serveSite(s *site, c *requestContext, memory, energy int64) an
 			"context.json(…) or context.redirect(url)", method, target.file, describeReturn(r)).Within(where(d.handler)))
 	}
 	return answerOf(decided)
+}
+
+// staticRules chạy các luật phủ file tĩnh name: all(…) của các thư mục từ gốc tới thư mục của file, rồi all(…) và
+// methods(…) của chính thư mục ấy, theo thứ tự viết, như trước một cửa ở thư mục ấy (blueprint/README.md "Route": luật
+// của thư mục áp cả cho file tĩnh của các thư mục nó phủ). Một thư mục site không biên dịch (bắt đầu bằng "_") không có
+// luật của riêng nó; luật all của các thư mục cha vẫn phủ. Không luật nào áp thì không dựng lượt chạy nào.
+func (w *Website) staticRules(s *site, c *requestContext, name string, memory, energy int64) (answer, bool) {
+	segments := strings.Split(name, "/")
+	segments = segments[:len(segments)-1] // các thư mục; đoạn cuối là file
+	nodes := []*node{s.root}
+	for _, segment := range segments {
+		child, found := nodes[len(nodes)-1].children[segment]
+		if !found {
+			break
+		}
+		nodes = append(nodes, child)
+	}
+	own := len(nodes) == len(segments)+1 // thư mục của file có trong cây: methods của nó phủ file
+	var m *runtime.Machine
+	var this value.Value
+	for i, n := range nodes {
+		for _, chain := range n.chains {
+			if (chain.branch || own && i == len(nodes)-1) && chain.applies("get") {
+				if m == nil {
+					m = runtime.New(runtime.Options{Memory: memory, Energy: energy, Context: c.request.http.Context()})
+					c.stage = siteGuard
+					this = value.Struct(c)
+				}
+				if a, stop := w.rules(m, c, this, chain.rules, c.request.ip); stop {
+					return a, true
+				}
+			}
+		}
+	}
+	return answer{}, false
 }
 
 // rules chạy các luật theo thứ tự: một limit quá trần là 429; một guard đi tiếp (các khoá nó đặt vào request), hay trả

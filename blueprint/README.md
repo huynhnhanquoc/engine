@@ -484,6 +484,36 @@ thư viện của site). Chưa làm: ghi, migrate, kiểm file với struct lúc
 `connection("tên")`. Câu hỏi cho owner: dữ liệu host thật ở `.database/system/kitwork.db`, spec cho
 `connection().schema("system")` là `.database/application/system.db`.
 
+**File tĩnh, lát 4 (owner 24/11/2026: "vâng làm lát 4 file tĩnh qua chuỗi host đi"; `host/static.go`, `host/site.go`,
+`host/website.go`):** một site phục vụ nguyên dạng `assets/`, `.well-known/` và danh mục file ở gốc (robots.txt,
+favicon.ico, …), luật lấy từ engine2 (`host/static.go`, `host/prewarm.go`), gọn lại. File tĩnh đi sau chuỗi host như mọi
+request (guard, routes, memory, energy), rồi các luật của thư mục phủ nó: `all` của các thư mục từ gốc tới thư mục của
+file, `all` và `methods` của chính thư mục ấy (luật "Route": luật của thư mục áp cả cho file tĩnh); thư mục `_…` không có
+luật riêng; không luật nào áp thì không dựng lượt chạy nào. GET và HEAD đọc file; file không có, hay method khác, đi tới
+các cửa. Câu trả lời: loại của engine (không đoán), nosniff, ETag yếu từ giờ ghi và cỡ, `http.ServeContent` (304, Range,
+HEAD), một năm `immutable` chỉ khi tên mang đầu SHA-256 của byte (kiểm bằng byte, nhớ theo file, cỡ, giờ ghi), còn lại
+một giờ; `context.response.status` là mã ServeContent viết. Không file nguồn, file chấm hay file ngoài danh sách nào ra
+ngoài: tên có `\`, `:`, đoạn rỗng, `.`, `..`, đoạn kết thúc bằng chấm hay dấu cách, tên ngắn của Windows, `.work`, `.ui`,
+`*.kitwork.*` là không phải file; mọi file mở bằng `os.OpenInRoot` trong thư mục site (link, junction ra ngoài không theo).
+Đối chứng của chốt `\` tìm ra một đường thật: không có nó, `/assets/sub\..\..\.env` đọc `.env` của site.
+- `warm` (true, false, hay `(context) => boolean` nhận `context.site` { hostname, folder }; giá trị khác là lỗi lúc nạp):
+  hỏi khi site biên dịch, ở request đầu tới nó (câu hỏi 6 còn mở); hàm ném hay trả thứ khác boolean thì engine viết lý do
+  vào Log và site không giữ ấm (warm chỉ đổi tốc độ, không đổi câu trả lời; tôi chọn, chờ owner). Site giữ ấm giữ file
+  trong RAM, mỗi file tới 256 KB, cả site tới 32 MB, so với đĩa nhiều nhất mỗi giây một lần (`Website.StaticCheck`), một
+  dòng log "warm: N files in memory". Site không giữ ấm mở file ở mỗi request, đóng sau khi gửi (cả khi luật từ chối).
+- Đo xen kẽ 8 vòng với engine2 (`archive/v0.2`, cùng file, `httptest`, trung vị): giữ ấm một luồng 19,9 µs (131 lần cấp
+  phát) so với 4,81 µs (28 lần); giữ ấm mười sáu luồng 10,6 so với 3,93 µs; không giữ ấm 127 so với 99 µs. Mục 12 ước
+  10–11 µs một luồng khi có cache truy vấn: luật "không chậm hơn" chưa đạt (chậm 4,1 lần, mục 12 đã đoán 2 lần). Profile:
+  gửi file ≈ 1 µs; phần lớn là VM chạy năm guard, trong đó các câu database (dựng câu, khoá cache, dựng dòng) khoảng một
+  phần ba; GC khoảng 30% CPU (≈ 22 KB mỗi request).
+- Test (`test/host/static_test.go`; mốc nghiệm thu thêm `assets/app.css`, `robots.txt` của shop.vn và một IP bị chặn hỏi
+  file): file và header, 304, Range, HEAD (giữ ấm và không); 23 đường không được ra file; junction của Windows; guard của
+  host trước file; file không có đi tới cửa; luật thư mục (all đi xuống, methods không, `_…`); giữ ấm (đọc RAM trước lần so,
+  bản mới sau, xoá thì 404, site không giữ ấm đọc đĩa), file quá 256 KB, warm là hàm, lỗi của warm; handle đóng sau khi
+  gửi và khi luật từ chối (mở độc quyền của Windows nói được, xoá thì không: Go mở file có chia sẻ xoá); 16 goroutine
+  (`-race`). 21 đối chứng đều đỏ. Chưa làm: tổng 32 MB chưa có test (engine2 thử bằng trường nội bộ), symlink (máy không
+  có quyền tạo, test bỏ qua), favicon của router, trang `content.ui`.
+
 ## Cách viết `application.work` (owner 24/11/2026)
 
 Owner, 24/11/2026: "tôi còn định hướng application theo kiểu này nữa" (dạng `const app = application(…)`,

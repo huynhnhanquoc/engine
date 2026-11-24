@@ -24,9 +24,10 @@ import (
 
 // Cửa website (24/11/2026, lát 1 và 2 của "engine3 trả lời request thật"): nghe các địa chỉ của website(), và mỗi
 // request chạy chuỗi của host trên một lượt chạy riêng, có trần byte và năng lượng: các guard, rồi routes chọn thư mục
-// site, memory và energy đặt trần cho lượt chạy của site (site.go). Gửi câu trả lời; rồi đúng một trong success hay
-// error, và finally (docs/KITWORK_APPLICATION.md mục 5). Chưa có, mỗi thứ một ghi chú lúc nạp: TLS (certificates, ssl:
-// mọi cổng nói HTTP thường), concurrency, warm.
+// site, memory và energy đặt trần cho lượt chạy của site (site.go), rồi file tĩnh hay một cửa của site (static.go,
+// lát 4: warm chọn site giữ file trong RAM). Gửi câu trả lời; rồi đúng một trong success hay error, và finally
+// (docs/KITWORK_APPLICATION.md mục 5). Chưa có, mỗi thứ một ghi chú lúc nạp: TLS (certificates, ssl: mọi cổng nói HTTP
+// thường), concurrency.
 
 // HostMemory, HostEnergy là trần của lượt chạy của host cho một request: chuỗi guard, routes, memory, energy, rồi các
 // hàm sau khi gửi (một lượt cho cả chuỗi, mục 12); cũng là trần của site khi website không viết memory, energy. Bằng
@@ -42,6 +43,8 @@ type Website struct {
 	Notes []string
 	// Log là nơi engine viết lỗi của code (một guard ném, một hàm sau khi gửi ném); nil là os.Stderr.
 	Log io.Writer
+	// StaticCheck là khoảng giữa hai lần so một file giữ ấm với đĩa (static.go); 0 là một giây. Đặt trước request đầu.
+	StaticCheck time.Duration
 
 	folder    string    // thư mục của application.work: routes tính từ đây
 	console   io.Writer // nơi console.log của các site viết, đầu dòng [tên site]
@@ -50,6 +53,7 @@ type Website struct {
 	routes    value.Value
 	memory    value.Value
 	energy    value.Value
+	warm      value.Value // true, false, hay (context) => boolean: site giữ file tĩnh trong RAM (static.go)
 	success   []value.Value
 	errors    []value.Value
 	finally   []value.Value
@@ -107,7 +111,10 @@ func LoadWebsite(booted Booted) (*Website, error) {
 	w.success = functions("application.website.success", f.Success)
 	w.errors = functions("application.website.error", f.Errors)
 	w.finally = functions("application.website.finally", f.Finally)
-	w.routes, w.memory, w.energy = f.Routes, f.Memory, f.Energy
+	w.routes, w.memory, w.energy, w.warm = f.Routes, f.Memory, f.Energy, f.Warm
+	if !w.warm.IsUndefined() && !w.warm.IsBoolean() && !w.warm.IsFunction() {
+		problems = append(problems, fmt.Errorf("application.website.warm: true, false, or (context) => boolean, got %s", describe(w.warm)))
+	}
 	switch {
 	case w.routes.IsUndefined():
 		w.Notes = append(w.Notes, "application.website has no routes: a request the guards let through gets 404")
@@ -129,7 +136,7 @@ func LoadWebsite(booted Booted) (*Website, error) {
 		name string
 		v    value.Value
 	}{
-		{"certificates", f.Certificates}, {"ssl", f.SSL}, {"concurrency", f.Concurrency}, {"warm", f.Warm},
+		{"certificates", f.Certificates}, {"ssl", f.SSL}, {"concurrency", f.Concurrency},
 	} {
 		if !later.v.IsUndefined() {
 			w.Notes = append(w.Notes, fmt.Sprintf("application.website.%s is not served by this engine yet: every port speaks plain HTTP", later.name))
@@ -151,9 +158,10 @@ type answer struct {
 	status      int
 	location    string // chuyển hướng
 	body        string
-	contentType string // "" là chữ thuần
-	allow       string // header Allow (405, OPTIONS)
-	retryAfter  int    // header Retry-After, giây (429)
+	contentType string      // "" là chữ thuần
+	allow       string      // header Allow (405, OPTIONS)
+	retryAfter  int         // header Retry-After, giây (429)
+	file        *servedFile // một file tĩnh: http.ServeContent gửi nó (mã của nó: 200, 206, 304, 416)
 	// response.error: code "" là thành công
 	code, message, at string
 }
@@ -164,7 +172,8 @@ func (w *Website) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	c := &requestContext{request: newRequest(r), stage: hostGuard}
 	m := runtime.New(runtime.Options{Memory: HostMemory, Energy: HostEnergy, Context: r.Context()})
 	a := w.decide(m, c)
-	send(rw, a, r.Method == http.MethodHead)
+	a.status = send(rw, r, a)
+	a.file.close()
 	if f, ok := rw.(http.Flusher); ok {
 		f.Flush() // đã gửi: các hàm sau khi gửi không đổi được nó
 	}
@@ -315,14 +324,28 @@ func describeReturn(v value.Value) string {
 	return describe(v)
 }
 
-// send viết câu trả lời: chuyển hướng là Location và mã; 204, 304 không có thân; còn lại là mã, Content-Type và thân,
-// trừ thân của một HEAD.
-func send(rw http.ResponseWriter, a answer, head bool) {
+// send viết câu trả lời và trả mã đã gửi: chuyển hướng là Location và mã; một file tĩnh là loại, nosniff, ETag,
+// Cache-Control, rồi http.ServeContent (Range, If-None-Match, If-Modified-Since, HEAD); 204, 304 không có thân; còn lại
+// là mã, Content-Type và thân, trừ thân của một HEAD.
+func send(rw http.ResponseWriter, r *http.Request, a answer) int {
 	h := rw.Header()
+	if a.file != nil {
+		h.Set("Content-Type", a.file.kind)
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("ETag", a.file.etag)
+		h.Set("Cache-Control", a.file.cache)
+		sw := &statusWriter{ResponseWriter: rw}
+		http.ServeContent(sw, r, "", a.file.modified, a.file.content)
+		if sw.status == 0 {
+			sw.status = http.StatusOK
+		}
+		return sw.status
+	}
+	head := r.Method == http.MethodHead
 	if a.location != "" {
 		h.Set("Location", a.location)
 		rw.WriteHeader(a.status)
-		return
+		return a.status
 	}
 	if a.allow != "" {
 		h.Set("Allow", a.allow)
@@ -332,7 +355,7 @@ func send(rw http.ResponseWriter, a answer, head bool) {
 	}
 	if a.status == http.StatusNoContent || a.status == http.StatusNotModified {
 		rw.WriteHeader(a.status)
-		return
+		return a.status
 	}
 	contentType := a.contentType
 	if contentType == "" {
@@ -344,6 +367,27 @@ func send(rw http.ResponseWriter, a answer, head bool) {
 	if !head {
 		io.WriteString(rw, a.body)
 	}
+	return a.status
+}
+
+// statusWriter giữ mã http.ServeContent viết (200, 206, 304, 416): context.response.status của một file tĩnh.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusWriter) WriteHeader(code int) {
+	if s.status == 0 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusWriter) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
 }
 
 // after chạy đúng một trong success hay error (theo response.error), rồi finally, theo thứ tự viết. Một hàm ném thì

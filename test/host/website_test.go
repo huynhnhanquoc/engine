@@ -100,7 +100,7 @@ func blueprintDoor(t testing.TB) (*host.Website, *lines, *lines) {
 // file viết, và các hàm error, finally của nó in đúng dòng của chúng.
 func TestTheBlueprintsGuardsAnswer(t *testing.T) {
 	w, console, log := blueprintDoor(t)
-	for _, want := range []string{"certificates", "ssl", "concurrency", "warm"} {
+	for _, want := range []string{"certificates", "ssl", "concurrency"} {
 		if !strings.Contains(strings.Join(w.Notes, "\n"), "application.website."+want+" is not served") {
 			t.Errorf("no note for %s: %q", want, w.Notes)
 		}
@@ -131,6 +131,13 @@ func TestTheBlueprintsGuardsAnswer(t *testing.T) {
 			"[console.log] GET shop.vn/ 200\n"},
 		{"a path the site does not have", "https://shop.vn/gio-hang", []string{agent, "k6"}, 404, "no route for /gio-hang", "",
 			"[console.log] 404 shop.vn/gio-hang no route for /gio-hang\n[console.log] GET shop.vn/gio-hang 404\n"},
+		{"a file of the site's assets, through every guard (lát 4)", "https://shop.vn/assets/app.css", []string{agent, "k6"}, 200,
+			"body { margin: 0; }\n", "", "[console.log] GET shop.vn/assets/app.css 200\n"},
+		{"a file of the root's catalogue", "https://shop.vn/robots.txt", []string{agent, "k6"}, 200, "User-agent: *\nAllow: /\n", "",
+			"[console.log] GET shop.vn/robots.txt 200\n"},
+		{"a file, for a banned IP: the guards come first", "https://shop.vn/assets/app.css",
+			[]string{agent, "k6", "RemoteAddr", "198.51.100.9:4000"}, 403, "IP 198.51.100.9 bị chặn: spam", "",
+			"[console.log] 403 shop.vn/assets/app.css IP 198.51.100.9 bị chặn: spam\n[console.log] GET shop.vn/assets/app.css 403\n"},
 	} {
 		rec := serve(w, c.target, c.headers...)
 		if rec.Code != c.status || rec.Body.String() != c.body || rec.Header().Get("Location") != c.location {
@@ -140,7 +147,8 @@ func TestTheBlueprintsGuardsAnswer(t *testing.T) {
 			t.Errorf("%s: printed %q, want %q", c.name, got, c.printed)
 		}
 	}
-	if got := log.String(); got != "" {
+	// warm của bản thiết kế chọn shop.vn: hai file tĩnh của nó nằm trong RAM từ request đầu
+	if got := log.String(); got != "website: apps/03dt/shop.vn: warm: 2 files in memory (1 KB)\n" {
 		t.Errorf("the engine logged %q", got)
 	}
 }

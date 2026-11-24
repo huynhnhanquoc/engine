@@ -1,2 +1,12 @@
 # archive/v0.2 is a copy of another repository's tree, byte for byte: no line-ending conversion there.
 archive/v0.2/** -text
+
+# The engine at the root keeps its files as they are written: tests compare bytes and pin line:column.
+/blueprint/** -text
+/cmd/** -text
+/core/** -text
+/database/** -text
+/host/** -text
+/test/** -text
+/go.mod -text
+/go.sum -text

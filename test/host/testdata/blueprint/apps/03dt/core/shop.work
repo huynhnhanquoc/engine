@@ -1,0 +1,16 @@
+// Bản chép của docs/host/blueprint/apps/03dt/core/shop.work (repo gốc): database của tenant 03dt. Gốc app là apps/03dt/
+// (thư mục cha của site shop.vn), nên các file của site import nó bằng "app/core/shop.work"; connection() là
+// apps/03dt/.database/application/kitwork.db.
+
+import { struct, id, string, decimal, timestamp } from "schema";
+import { connection } from "database";
+
+const orders = struct({
+  id: id(),
+  email: string().email(),
+  status: string().index(),
+  amount: decimal(2),
+  createdAt: timestamp().created(),
+});
+
+export const db = connection().tables({ orders });

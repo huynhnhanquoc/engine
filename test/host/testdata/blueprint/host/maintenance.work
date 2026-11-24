@@ -1,0 +1,12 @@
+// host/maintenance.work, bản giả lập cho mốc nghiệm thu của engine3: bản thật gọi kitwork/database (backup, migrate),
+// engine3 chưa có; ở đây mỗi việc chỉ in một dòng, cùng hình dạng export.
+
+export const backup = () => {
+  for (const name of ["shopping", "system"]) {
+    console.log("backup", name);
+  }
+};
+
+export const migrate = (context) => {
+  console.log("migrate", context.options.yes === true);
+};

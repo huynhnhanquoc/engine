@@ -1,0 +1,127 @@
+// Bản chép của docs/host/blueprint/application.work (repo gốc, 22/11/2026) cho mốc nghiệm thu của engine3 (23/11/2026),
+// viết lại theo cách viết của owner 24/11/2026 (docs/KITWORK_APPLICATION_WORK.md): const app = application(…), mỗi cửa
+// một câu app.<cửa>(cấu hình).<hàm>….<chữ cuối>(giá trị chính), return app.run(). Nội dung giữ nguyên: năm guard, lịch
+// của host và các tenant, cổng database, ba lệnh. host/system.work đọc KitDB (lát 3; các test tạo file database của
+// nó trong một bản chép của thư mục này); host/maintenance.work còn là bản giả lập.
+//
+// Nạp file này chỉ ghi vào app, không làm gì; engine nhận app ở dòng return.
+
+import { application, environment } from "application";
+import { system } from "./host/system.work";
+import { backup, migrate } from "./host/maintenance.work";
+
+const env = environment("./.env");
+
+const app = application({ memory: "2gb", timezone: "Asia/Ho_Chi_Minh" });
+
+// ── Website ─────────────────────────────────────────────
+app.website({ certificates: ".certificates", concurrency: 16 })
+  // Lúc boot, mỗi site: giữ ấm (trang ghép sẵn, file tĩnh nhỏ trong RAM) hay không
+  .warm((context) => context.site.hostname === "shop.vn")
+
+  // Lúc bắt tay TLS: tên miền này có phải của ta không
+  .ssl((context) => {
+    const { hostname } = context.request;
+    const domain = system.where((domains) => domains.hostname === hostname).first();
+    return domain !== null && domain.status === "confirmed";
+  })
+
+  // Mỗi request: mỗi guard một việc, từ chối thì nói lý do
+  .guard((context) => {
+    const { secure, hostname, path, search } = context.request;
+    if (!secure) {
+      return context.status(301).redirect("https://" + hostname + path + search);
+    }
+    return context.next();
+  })
+  .guard((context) => {
+    const { ip } = context.request;
+    const entry = system.where((banned) => banned.ip === ip).first();
+    if (entry !== null) {
+      return context.status(403).error("IP " + ip + " bị chặn: " + entry.reason);
+    }
+    return context.next();
+  })
+  .guard((context) => {
+    const { hostname } = context.request;
+    const domain = system.where((domains) => domains.hostname === hostname).first();
+    if (domain === null) {
+      return context.status(404).error("Tên miền " + hostname + " chưa đăng ký");
+    }
+    if (domain.status !== "confirmed") {
+      return context.status(404).error("Tên miền " + hostname + " chưa xác nhận");
+    }
+    const tenant = system.where((tenants) => tenants.identity === domain.identity).first();
+    if (tenant === null || tenant.status !== "active") {
+      return context.status(403).error("Tenant " + domain.identity + " đang tạm dừng");
+    }
+    return context.next({ tenant });
+  })
+  .guard((context) => {
+    const agent = context.request.header("User-Agent");
+    if (agent === null || agent === "") {
+      return context.status(403).error("Thiếu User-Agent");
+    }
+    return context.next();
+  })
+  .guard((context) => {
+    if (context.request.path.startsWith("/wp-")) {
+      return context.status(404).error("Không có " + context.request.path);
+    }
+    return context.next();
+  })
+
+  // Chọn site (gốc app là thư mục cha), rồi trần cho code của tenant
+  .routes((context) => {
+    const { tenant, hostname } = context.request;
+    return `apps/${tenant.identity}/${hostname}`;
+  })
+  .memory((context) => context.request.tenant.memory ?? "64mb")
+  .energy((context) => context.request.tenant.energy ?? 10000000)
+
+  // Sau khi đã gửi: đúng một trong success hay error, rồi finally
+  .error((context) => {
+    const { request, response } = context;
+    console.log(response.status, request.hostname + request.path, response.error.message);
+  })
+  .finally((context) => {
+    const { request, response } = context;
+    console.log(request.method, request.hostname + request.path, response.status);
+  })
+
+  // Chữ cuối: mỗi cổng nhận cả TLS lẫn HTTP thường
+  .listen(443, 80);
+
+// ── Lịch: của host và của các tenant đang chạy ──────────
+app.schedule()
+  .memory((context) => (context.job.folder === ".schedules" ? "1gb" : "512mb"))
+  .error((context) => {
+    const { job } = context;
+    console.log(job.folder, job.name, job.error.message);
+  })
+  .run(() => {
+    const tenants = system.list((tenants) => tenants.status === "active");
+    return [".schedules", ...tenants.map((tenant) => `apps/${tenant.identity}/.schedules`)];
+  });
+
+// ── Cổng database ───────────────────────────────────────
+app.database({ port: 5445, password: env.KITDB_PASSWORD }).open(".database");
+
+// ── Lệnh: chữ là của bạn ────────────────────────────────
+app.command("kitcli")
+  .error((context) => {
+    const { command } = context;
+    console.log(command.name, command.error.message);
+  })
+  .execute({
+    backup: (context) => backup(),
+    migrate,
+    tenants: (context) => {
+      const tenants = system.list((tenants) => tenants.status === "active");
+      for (const tenant of tenants) {
+        console.log(tenant.identity, tenant.memory ?? "64mb");
+      }
+    },
+  });
+
+return app.run();

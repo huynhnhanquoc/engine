@@ -1,0 +1,14 @@
+// Bản chép của docs/host/blueprint/apps/03dt/shop.vn/don-hang/router.work (repo gốc), viết theo route đã chốt
+// 24/11/2026: danh sách đơn hàng mới của shop.vn.
+
+import { router } from "router";
+import { db } from "app/core/shop.work";
+
+const route = router();
+
+route.get((context) => {
+  const orders = db.where((orders) => orders.status === "moi").descending((orders) => orders.createdAt).list(20);
+  return context.json(orders);
+});
+
+return route;

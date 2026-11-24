@@ -1,0 +1,15 @@
+// Bản chép của docs/host/blueprint/apps/03dt/shop.vn/router.work (repo gốc) cho mốc nghiệm thu của engine3, viết lại
+// theo route đã chốt 24/11/2026 (blueprint/README.md "Route"): thư viện "router", router(), return route.
+// context.request.tenant là dòng tenant mà guard của host đã đặt bằng context.next({ tenant }): code của tenant đọc
+// được, không sửa được.
+
+import { router } from "router";
+
+const route = router();
+
+route.get((context) => {
+  const { tenant } = context.request;
+  return context.text("Xin chào từ shop.vn của tenant " + tenant.identity);
+});
+
+return route;

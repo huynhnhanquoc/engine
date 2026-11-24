@@ -1,0 +1,27 @@
+// Bản chép của docs/host/blueprint/host/system.work (repo gốc) cho mốc nghiệm thu của engine3: dữ liệu của host. Chỉ
+// khai bảng; mỗi hàm của application.work tự viết truy vấn của nó. Thư viện gọi bằng tên ("schema", "database"), như
+// "application" và "router" (24/11/2026, lát 3). connection().schema("system") là .database/application/system.db của
+// thư mục application.work; các test tạo file ấy, có dòng, trong một bản chép của thư mục này (test/host/database_test.go).
+
+import { struct, string, integer, choice } from "schema";
+import { connection } from "database";
+
+const domains = struct({
+  hostname: string().max(253),
+  identity: string(),
+  status: choice("pending", "confirmed"),
+});
+
+const tenants = struct({
+  identity: string(),
+  status: choice("active", "paused"),
+  memory: string().nullable(),
+  energy: integer().nullable(),
+});
+
+const banned = struct({
+  ip: string(),
+  reason: string(),
+});
+
+export const system = connection().schema("system").tables({ domains, tenants, banned });

@@ -13,7 +13,6 @@ import (
 	"github.com/huynhnhanquoc/engine/core/runtime"
 	"github.com/huynhnhanquoc/engine/core/syntax"
 	"github.com/huynhnhanquoc/engine/core/value"
-	"github.com/huynhnhanquoc/sqlitewire/sqlite"
 )
 
 // Một câu lệnh (docs/KITWORK_DATABASE.md mục 2): các mô tả (where, ascending, descending) không chạy gì, mỗi chữ trả
@@ -184,39 +183,39 @@ func (q *Query) read(run javascript.Run, action string, limit int, bounded bool)
 	if meter != nil { // các dòng đã dựng: bộ đếm thấy chúng khi đếm lại cái lượt chạy giữ
 		defer meter.LetGo(meter.Keep(javascript.Kept{Items: &rows}))
 	}
-	count := 0
-	err = database.Read(ctx, func(snapshot *sqlite.Snapshot) error {
-		result, err := snapshot.Query(sql, arguments...)
-		if err != nil {
-			return err
-		}
-		defer result.Close()
-		for result.Next() {
-			if action == "count" {
-				return result.Scan(&count)
-			}
-			row, bytes, err := decodeRow(table, result.Scan)
-			if err != nil {
-				return err
-			}
-			if meter != nil {
-				if failure := meter.Spend(rowUnits); failure.IsInvalid() {
-					return failure.Error()
-				}
-				if failure := meter.Made(bytes); failure.IsInvalid() {
-					return failure.Error()
-				}
-			}
-			rows = append(rows, row)
-		}
-		return result.Err()
-	})
+	// Query của sqlitewire: kết quả được giữ và đưa lại tới khi một commit đổi bảng câu đọc (cache truy vấn,
+	// KITWORK_APPLICATION.md mục 12). Các dòng của nó dùng chung giữa các request, chỉ đọc: mỗi lượt chạy dựng giá trị
+	// của riêng nó và trả năng lượng, byte cho từng dòng như khi đọc thẳng.
+	result, err := database.Query(ctx, sql, arguments...)
 	if err != nil {
 		return failed(err, q.handle, table)
 	}
-	switch action {
-	case "count":
+	if action == "count" {
+		if len(result.Rows) != 1 || len(result.Rows[0]) != 1 {
+			return value.Fail(value.DatabaseCode, "%s: COUNT(*) gave %d rows", q.handle.shown, len(result.Rows))
+		}
+		count, ok := result.Rows[0][0].(int64)
+		if !ok {
+			return value.Fail(value.DatabaseCode, "%s: COUNT(*) gave %T", q.handle.shown, result.Rows[0][0])
+		}
 		return value.Number(float64(count))
+	}
+	for _, raw := range result.Rows {
+		row, bytes, err := decodeRow(table, raw)
+		if err != nil {
+			return failed(err, q.handle, table)
+		}
+		if meter != nil {
+			if failure := meter.Spend(rowUnits); failure.IsInvalid() {
+				return failure
+			}
+			if failure := meter.Made(bytes); failure.IsInvalid() {
+				return failure
+			}
+		}
+		rows = append(rows, row)
+	}
+	switch action {
 	case "first":
 		if len(rows) == 0 {
 			return value.Null()
@@ -370,14 +369,9 @@ func number(n float64) any {
 // decodeRow đọc một dòng của table thành object, mỗi cột như struct nói nó đọc ra: decimal là số, timestamp là số mili
 // giây, boolean là true/false, NULL là null. Các dòng mượn chung khoá (Shape của bảng). bytes là cái dòng giữ: phần
 // đầu, một Value mỗi cột, và chữ của các chuỗi.
-func decodeRow(table *Table, scan func(...any) error) (row value.Value, bytes uint64, err error) {
-	raw := make([]any, len(table.columns))
-	targets := make([]any, len(raw))
-	for i := range raw {
-		targets[i] = &raw[i]
-	}
-	if err := scan(targets...); err != nil {
-		return value.Value{}, 0, err
+func decodeRow(table *Table, raw []any) (row value.Value, bytes uint64, err error) {
+	if len(raw) != len(table.columns) {
+		return value.Value{}, 0, fmt.Errorf("%s: the database gave %d columns, the struct has %d", table.name, len(raw), len(table.columns))
 	}
 	items := make([]value.Value, len(raw))
 	for i, c := range table.columns {

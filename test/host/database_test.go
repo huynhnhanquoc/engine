@@ -394,3 +394,77 @@ func TestStatementsAtOnce(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Một Handle nhớ SQL của 256 dạng câu, không hơn (statement.go maxStatements, 25/11/2026): list(n) với n đổi theo
+// request không làm bộ nhớ ấy lớn mãi. Từ ngoài chỉ thấy được qua số lần cấp phát: một câu có dạng được nhớ không dựng
+// SQL; cùng câu ấy trên một Handle đã đầy thì dựng lại SQL mỗi lần chạy, vài lần cấp phát. Hai site giống nhau: ở site
+// thứ hai, trang fill chạy 300 dạng trước khi trang one chạy lần đầu.
+func TestAHandleRemembersSoManyShapes(t *testing.T) {
+	if raced {
+		t.Skip("-race: the detector allocates; the difference is measured without it")
+	}
+	routes := map[string]string{
+		"fill": `let total = 0;
+  for (let n = 1; n <= 300; n++) { total = total + db.where((orders) => orders.id > 0).list(n).length; }
+  return context.json(total);`,
+		"one": `return context.json(db.where((orders) => orders.id > 0).list(9000).length);`,
+	}
+	cost := func(fill bool) float64 {
+		w, _, log := databaseSite(t, 3, "", routes)
+		if fill {
+			if rec := serve(w, "https://site.vn/fill"); rec.Code != 200 || rec.Body.String() != "897" {
+				t.Fatalf("fill: %d %s, log %q", rec.Code, rec.Body.String(), log.take())
+			}
+		}
+		one := func() {
+			if rec := serve(w, "https://site.vn/one"); rec.Code != 200 || rec.Body.String() != "3" {
+				t.Fatalf("one: %d %s, log %q", rec.Code, rec.Body.String(), log.take())
+			}
+		}
+		one()
+		return testing.AllocsPerRun(200, one)
+	}
+	remembered, rebuilt := cost(false), cost(true)
+	t.Logf("a statement whose shape is remembered: %.0f allocations a request; on a full handle: %.0f", remembered, rebuilt)
+	if rebuilt < remembered+2 {
+		t.Errorf("a statement past the 256 shapes a handle remembers costs %.0f allocations a request, %.0f when remembered: "+
+			"it was remembered too, so the handle has no ceiling", rebuilt, remembered)
+	}
+}
+
+// Sau khi host đóng các file database (Booted.Close, lúc host dừng), một câu lệnh là lỗi DATABASE, 500: Handle giữ file
+// nó đã mở (connection.go Handle.open, 25/11/2026) và không mở lại. Trước 25/11 mỗi câu hỏi lại Files, và một request
+// đến sau Close lặng lẽ mở file lần nữa: một người ghi nữa của sqlitewire mà không ai đóng.
+func TestAStatementAfterTheHostClosedIsAnError(t *testing.T) {
+	folder := blueprintFolder(t)
+	source, err := os.ReadFile(filepath.Join(folder, "application.work"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	console, log := &lines{}, &lines{}
+	booted, err := host.Program{File: "application.work", Source: string(source), Folder: folder, Console: console,
+		System: func(string) (string, bool) { return "", false }}.Boot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { booted.Close() })
+	w, err := host.LoadWebsite(booted)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Log = log
+	const page = "https://shop.vn/don-hang"
+	if rec := serve(w, page, "User-Agent", "k6"); rec.Code != 200 {
+		t.Fatalf("before Close: %d %s, log %q", rec.Code, rec.Body.String(), log.take())
+	}
+	log.take()
+	if err := booted.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 { // lần hai: không câu nào đã mở lại file cho câu sau
+		rec := serve(w, page, "User-Agent", "k6")
+		if logged := log.take(); rec.Code != 500 || !strings.Contains(logged, "database is closed") {
+			t.Errorf("after Close: %d %s, log %q", rec.Code, rec.Body.String(), logged)
+		}
+	}
+}

@@ -132,3 +132,35 @@ return down;`))
 		}
 	}
 }
+
+// Một lượt chạy đệ quy sâu làm ngăn xếp lớn quá 4096 ô (keptStack): Release không đưa máy ấy về kho, nên một request
+// như vậy không để lại một mảng lớn cho mọi request sau. Máy của một lượt chạy nông thì về kho (ca đầu của file).
+func TestAMachineWithALargeStackIsNotKept(t *testing.T) {
+	deep := compileSource(t, `const down = (n, a, b, c) => n === 0 ? 0 : 1 + down(n - 1, n, a, b);
+return down(900, 0, 0, 0);`)
+	shallow := compileSource(t, `return 1 + 1;`)
+	oneProcessor(t, func() {
+		kept := 0
+		for range 10 {
+			m := runtime.Take(runtime.Options{Energy: 1 << 30})
+			if r := m.Run(deep); r.Number() != 900 {
+				t.Fatalf("the deep call: %v %v", r, r.Error())
+			}
+			m.Release()
+			n := runtime.Take(runtime.Options{})
+			if n == m {
+				t.Fatal("the pool gave back a machine whose run went 900 calls deep: its stack stays as large as that run made it")
+			}
+			if r := n.Run(shallow); r.Number() != 2 {
+				t.Fatalf("the shallow run: %v %v", r, r.Error())
+			}
+			n.Release()
+			if o := runtime.Take(runtime.Options{}); o == n {
+				kept++
+			} // o không trả về kho: vòng sau bắt đầu với kho rỗng
+		}
+		if kept == 0 { // dưới -race kho bỏ ngẫu nhiên một phần thứ nó nhận: không đòi lần nào cũng giữ
+			t.Error("the pool never gave back the machine of a shallow run: this case would pass with no pool at all")
+		}
+	})
+}

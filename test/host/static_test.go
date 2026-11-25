@@ -484,3 +484,33 @@ func TestAJunctionOutOfTheSiteIsNotFollowed(t *testing.T) {
 		}
 	}
 }
+
+// Header của một file giữ ấm (Content-Type, ETag, Cache-Control, nosniff) là một mảng mọi request dùng chung
+// (static.go fileHeaders, 25/11/2026), một phần tử, cap 1. Thứ một câu trả lời thêm vào header ấy (Header.Add của một
+// lớp bọc ResponseWriter) là của riêng câu trả lời ấy: câu khác không thấy, không ghi đè, và request sau nhận header như
+// cũ. Mảng có chỗ thừa thì hai câu trả lời ghi vào cùng một ô.
+func TestWhatAnAnswerAddsToAHeaderStaysItsOwn(t *testing.T) {
+	w, _, _ := blueprintDoor(t)
+	one := func() http.Header {
+		rec := serve(w, "https://shop.vn/assets/app.css", "User-Agent", "k6")
+		if rec.Code != 200 {
+			t.Fatal(rec.Code, rec.Body)
+		}
+		return rec.Header() // header câu trả lời đang giữ, không phải bản chép
+	}
+	want := one().Clone()
+	for _, name := range []string{"Content-Type", "Etag", "Cache-Control", "X-Content-Type-Options"} {
+		if len(want[name]) != 1 {
+			t.Fatalf("%s: %q, want one value", name, want[name])
+		}
+		first, second := one(), one()
+		first.Add(name, "of the first")
+		second.Add(name, "of the second")
+		if got := first[name]; len(got) != 2 || got[0] != want[name][0] || got[1] != "of the first" {
+			t.Errorf("%s of the first answer after the second added to its own: %q", name, got)
+		}
+		if got := one()[name]; len(got) != 1 || got[0] != want[name][0] {
+			t.Errorf("%s of a later request: %q, want %q", name, got, want[name])
+		}
+	}
+}

@@ -3,10 +3,13 @@ package database
 import (
 	"context"
 	"fmt"
+	"maps"
 	"math"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/huynhnhanquoc/engine/core/javascript"
@@ -35,6 +38,8 @@ type Query struct {
 	table  *Table
 	where  []bound
 	order  []ordered
+	// one là chỗ của điều kiện khi câu có một (phần lớn các câu): where trỏ vào nó, câu là một lần cấp phát
+	one [1]bound
 }
 
 type bound struct {
@@ -55,6 +60,12 @@ func (q *Query) Key(name string) value.Value {
 			})
 		}
 	}
+	return noWord(name)
+}
+
+// noWord là lỗi của một chữ câu lệnh không có. Word gọi nó chứ không gọi Key: Key giữ q trong một hàm, nên q của Word
+// (câu rỗng của Handle.Word) sẽ phải nằm trên heap.
+func noWord(name string) value.Value {
 	hint := ""
 	switch name {
 	case "orderBy", "sort", "asc", "desc":
@@ -125,7 +136,7 @@ func (q *Query) Word(run javascript.Run, name string, arguments []value.Value) v
 		}
 		return target.read(run, name, 1, false)
 	}
-	return q.Key(name)
+	return noWord(name)
 }
 
 // with là q và một điều kiện nữa: fn là (table) => …, bảng của nó là bảng của câu.
@@ -144,7 +155,12 @@ func (q *Query) with(fn value.Value, word string) (*Query, value.Value) {
 	}
 	next := q.copy()
 	next.table = c.table
-	next.where = append(next.where, bound{condition: c, closure: closure})
+	if len(next.where) == 0 {
+		next.one[0] = bound{condition: c, closure: closure}
+		next.where = next.one[:1:1]
+	} else {
+		next.where = append(next.where, bound{condition: c, closure: closure})
+	}
 	return next, value.Value{}
 }
 
@@ -174,15 +190,11 @@ func (q *Query) read(run javascript.Run, action string, limit int, bounded bool)
 		return failure
 	}
 	ctx := contextOf(run)
-	database, err := q.handle.files.get(ctx, q.handle.path, q.handle.shown)
+	database, err := q.handle.open(ctx)
 	if err != nil {
 		return value.Fail(value.DatabaseCode, "%v", err)
 	}
 	meter, _ := run.(javascript.Meter)
-	var rows []value.Value
-	if meter != nil { // các dòng đã dựng: bộ đếm thấy chúng khi đếm lại cái lượt chạy giữ
-		defer meter.LetGo(meter.Keep(javascript.Kept{Items: &rows}))
-	}
 	// Query của sqlitewire: kết quả được giữ và đưa lại tới khi một commit đổi bảng câu đọc (cache truy vấn,
 	// KITWORK_APPLICATION.md mục 12). Các dòng của nó dùng chung giữa các request, chỉ đọc: mỗi lượt chạy dựng giá trị
 	// của riêng nó và trả năng lượng, byte cho từng dòng như khi đọc thẳng.
@@ -200,27 +212,26 @@ func (q *Query) read(run javascript.Run, action string, limit int, bounded bool)
 		}
 		return value.Number(float64(count))
 	}
-	for _, raw := range result.Rows {
-		row, bytes, err := decodeRow(table, raw)
-		if err != nil {
-			return failed(err, q.handle, table)
-		}
-		if meter != nil {
-			if failure := meter.Spend(rowUnits); failure.IsInvalid() {
-				return failure
-			}
-			if failure := meter.Made(bytes); failure.IsInvalid() {
-				return failure
-			}
-		}
-		rows = append(rows, row)
-	}
-	switch action {
-	case "first":
-		if len(rows) == 0 {
+	if action == "first" { // LIMIT 1: một dòng, hay không có
+		if len(result.Rows) == 0 {
 			return value.Null()
 		}
-		return rows[0]
+		row, failure := q.decode(meter, table, result.Rows[0])
+		if failure.IsInvalid() {
+			return failure
+		}
+		return row
+	}
+	var rows []value.Value
+	if meter != nil { // các dòng đã dựng: bộ đếm thấy chúng khi đếm lại cái lượt chạy giữ
+		defer meter.LetGo(meter.Keep(javascript.Kept{Items: &rows}))
+	}
+	for _, raw := range result.Rows {
+		row, failure := q.decode(meter, table, raw)
+		if failure.IsInvalid() {
+			return failure
+		}
+		rows = append(rows, row)
 	}
 	if bounded && len(rows) > defaultList {
 		return value.Fail(value.RangeCode, "list() reads %d rows at most and more of %s match: write list(n), up to %d", defaultList, table.name, maxList)
@@ -228,8 +239,119 @@ func (q *Query) read(run javascript.Run, action string, limit int, bounded bool)
 	return value.ArrayOf(rows)
 }
 
-// statement là SQL của câu và các đối số của nó.
+// decode là một dòng đọc ra thành object, trả năng lượng và byte của nó cho meter.
+func (q *Query) decode(meter javascript.Meter, table *Table, raw []any) (value.Value, value.Value) {
+	row, bytes, err := decodeRow(table, raw)
+	if err != nil {
+		return value.Value{}, failed(err, q.handle, table)
+	}
+	if meter != nil {
+		if failure := meter.Spend(rowUnits); failure.IsInvalid() {
+			return value.Value{}, failure
+		}
+		if failure := meter.Made(bytes); failure.IsInvalid() {
+			return value.Value{}, failure
+		}
+	}
+	return row, value.Value{}
+}
+
+// statementKey là dạng của một câu: bảng, hành động, số dòng, các điều kiện và các bước sắp xếp (tới keyedParts mỗi
+// loại; câu dài hơn dựng SQL mỗi lần chạy). Hai câu cùng dạng có cùng SQL, chỉ đối số khác.
+type statementKey struct {
+	table  *Table
+	action string
+	limit  int
+	where  [keyedParts]*condition
+	order  [keyedParts]ordered
+}
+
+const (
+	keyedParts = 4
+	// maxStatements là số dạng câu một Handle nhớ SQL: quá thì câu dạng mới dựng SQL mỗi lần chạy (list(n) với n đổi
+	// theo request làm ra nhiều dạng).
+	maxStatements = 256
+)
+
+// statements là SQL của các dạng câu một Handle đã chạy (25/11/2026: dựng lại ba câu SQL mỗi request là một phần tám
+// thời gian của chuỗi host). Đọc không khoá: bản đồ không đổi sau khi đưa ra; thêm một dạng là chép nó, chỉ trong
+// những lần chạy đầu.
+type statements struct {
+	mu   sync.Mutex
+	done atomic.Pointer[map[statementKey]string]
+}
+
+func (s *statements) get(key statementKey) (string, bool) {
+	if done := s.done.Load(); done != nil {
+		sql, found := (*done)[key]
+		return sql, found
+	}
+	return "", false
+}
+
+func (s *statements) put(key statementKey, sql string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old := s.done.Load()
+	if old != nil && len(*old) >= maxStatements {
+		return
+	}
+	next := map[statementKey]string{key: sql}
+	if old != nil {
+		maps.Copy(next, *old)
+	}
+	s.done.Store(&next)
+}
+
+// shape là dạng của câu; keyed là false khi câu dài hơn một statementKey giữ được.
+func (q *Query) shape(table *Table, action string, limit int) (key statementKey, keyed bool) {
+	if len(q.where) > keyedParts || len(q.order) > keyedParts {
+		return key, false
+	}
+	key.table, key.action, key.limit = table, action, limit
+	for i, w := range q.where {
+		key.where[i] = w.condition
+	}
+	copy(key.order[:], q.order)
+	return key, true
+}
+
+// statement là SQL của câu, nhớ theo dạng của nó trên Handle, và các đối số của nó.
 func (q *Query) statement(table *Table, action string, limit int) (string, []any, value.Value) {
+	key, keyed := q.shape(table, action, limit)
+	sql, found := "", false
+	if keyed {
+		sql, found = q.handle.statements.get(key)
+	}
+	if !found {
+		sql = q.sql(table, action, limit)
+		if keyed {
+			q.handle.statements.put(key, sql)
+		}
+	}
+	count := 0
+	for _, w := range q.where {
+		count += len(w.condition.params)
+	}
+	if count == 0 {
+		return sql, nil, value.Value{}
+	}
+	arguments := make([]any, 0, count)
+	for _, w := range q.where {
+		for _, p := range w.condition.params {
+			argument, failure := p.value(w.closure)
+			if failure.IsInvalid() {
+				return "", nil, failure
+			}
+			arguments = append(arguments, argument)
+		}
+	}
+	return sql, arguments, value.Value{}
+}
+
+// sql là câu SQL của q: các cột của bảng (hay COUNT(*)), các điều kiện nối bằng AND, các bước sắp xếp rồi khoá của
+// bảng, LIMIT.
+func (q *Query) sql(table *Table, action string, limit int) string {
 	var b strings.Builder
 	if action == "count" {
 		b.WriteString("SELECT COUNT(*) FROM ")
@@ -244,7 +366,6 @@ func (q *Query) statement(table *Table, action string, limit int) (string, []any
 		b.WriteString(" FROM ")
 	}
 	b.WriteString(quote(table.name))
-	var arguments []any
 	for i, w := range q.where {
 		if i == 0 {
 			b.WriteString(" WHERE ")
@@ -252,16 +373,9 @@ func (q *Query) statement(table *Table, action string, limit int) (string, []any
 			b.WriteString(" AND ")
 		}
 		b.WriteString("(" + w.condition.sql + ")")
-		for _, p := range w.condition.params {
-			argument, failure := p.value(w.closure)
-			if failure.IsInvalid() {
-				return "", nil, failure
-			}
-			arguments = append(arguments, argument)
-		}
 	}
 	if action == "count" {
-		return b.String(), arguments, value.Value{}
+		return b.String()
 	}
 	b.WriteString(" ORDER BY ")
 	for _, o := range q.order {
@@ -277,7 +391,7 @@ func (q *Query) statement(table *Table, action string, limit int) (string, []any
 		b.WriteString("rowid")
 	}
 	b.WriteString(" LIMIT " + strconv.Itoa(limit))
-	return b.String(), arguments, value.Value{}
+	return b.String()
 }
 
 // value là giá trị của tham số lúc câu chạy, đổi theo cách cột nó được so lưu.
@@ -303,19 +417,21 @@ func (p param) value(closure *runtime.Closure) (any, value.Value) {
 			}
 		}
 	}
-	return bind(p.column, v, strings.Join(p.path, "."))
+	return bind(p.column, v, p.path)
 }
 
 // bind là v như cột c lưu: decimal là số nguyên × 10^scale, timestamp là chữ UTC, boolean là 0/1. Một giá trị khác loại
 // cột là lỗi (chặt như TypeScript: so một chuỗi với một cột số không bao giờ đúng ở JavaScript).
-func bind(c *column, v value.Value, name string) (any, value.Value) {
+// path là tên bắt được và đường thuộc tính sau nó (user.id), nil cho một giá trị viết thẳng: chỉ lời báo đọc nó.
+func bind(c *column, v value.Value, path []string) (any, value.Value) {
 	if v.IsNullish() {
 		return nil, value.Value{}
 	}
-	if name == "" {
-		name = "the value"
-	}
 	wrong := func(want string) (any, value.Value) {
+		name := strings.Join(path, ".")
+		if name == "" {
+			name = "the value"
+		}
 		return nil, value.Fail(value.TypeCode, "%s is a %s, compared with column %s (%s): write a %s", name, v.Typeof(), c.name, c.kind, want)
 	}
 	switch c.kind {

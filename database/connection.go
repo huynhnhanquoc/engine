@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/huynhnhanquoc/engine/core/javascript"
 	"github.com/huynhnhanquoc/engine/core/value"
@@ -198,9 +199,13 @@ type Handle struct {
 	shown  string // "apps/03dt/.database/application/kitwork.db"
 	tables map[string]*Table
 	names  []string
-	// translations là bản dịch của mỗi hàm điều kiện hay sắp xếp đã gặp (translate.go): translationKey → *condition,
-	// *orderColumn hay error
-	translations sync.Map
+	// conditions, orders là bản dịch của mỗi hàm điều kiện, sắp xếp đã gặp (translate.go): *compiler.Function →
+	// *condition, *orderColumn hay error
+	conditions, orders sync.Map
+	// statements là SQL của mỗi dạng câu đã chạy (statement.go)
+	statements statements
+	// database là file đã mở, sau câu đầu: các câu sau không qua khoá chung của Files
+	database atomic.Pointer[sqlite.Database]
 }
 
 // statementWords là các chữ của một câu lệnh: mô tả (where, ascending, descending) và hành động (list, first, count).
@@ -208,6 +213,22 @@ var statementWords = []string{"where", "ascending", "descending", "list", "first
 
 func (h *Handle) Key(name string) value.Value { return (&Query{handle: h}).Key(name) }
 
+// Word là chữ đầu của một câu (system.where(…), system.first(…)): câu rỗng của h nằm trên ngăn xếp, chỉ câu chữ ấy
+// dựng ra được cấp phát.
 func (h *Handle) Word(run javascript.Run, name string, arguments []value.Value) value.Value {
-	return (&Query{handle: h}).Word(run, name, arguments)
+	q := Query{handle: h}
+	return q.Word(run, name, arguments)
+}
+
+// open là file database của h, mở ở câu đầu (Files.get) rồi giữ trên h.
+func (h *Handle) open(ctx context.Context) (*sqlite.Database, error) {
+	if database := h.database.Load(); database != nil {
+		return database, nil
+	}
+	database, err := h.files.get(ctx, h.path, h.shown)
+	if err != nil {
+		return nil, err
+	}
+	h.database.Store(database)
+	return database, nil
 }

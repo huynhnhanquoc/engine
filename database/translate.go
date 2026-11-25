@@ -37,17 +37,13 @@ type orderColumn struct {
 	column *column
 }
 
-// Mỗi Handle nhớ bản dịch của mỗi hàm nó gặp (Handle.translations; một hàm dùng với hai Handle là hai bản dịch): một
-// Handle dựng trong một request đi cùng các bản dịch của nó khi request xong.
-type translationKey struct {
-	function *compiler.Function
-	order    bool
-}
+// Mỗi Handle nhớ bản dịch của mỗi hàm nó gặp (Handle.conditions, Handle.orders; một hàm dùng với hai Handle là hai bản
+// dịch): một Handle dựng trong một request đi cùng các bản dịch của nó khi request xong. Khoá là hàm đã biên dịch, một
+// con trỏ: tra không cấp phát.
 
 // translateCondition là bản dịch điều kiện của f với h, nhớ sau lần đầu.
 func translateCondition(f *compiler.Function, h *Handle) (*condition, error) {
-	translations := &h.translations
-	key := translationKey{f, false}
+	translations, key := &h.conditions, f
 	if done, found := translations.Load(key); found {
 		if err, failed := done.(error); failed {
 			return nil, err
@@ -65,8 +61,7 @@ func translateCondition(f *compiler.Function, h *Handle) (*condition, error) {
 
 // translateOrder là bản dịch của một hàm sắp xếp ((orders) => orders.createdAt).
 func translateOrder(f *compiler.Function, h *Handle) (*orderColumn, error) {
-	translations := &h.translations
-	key := translationKey{f, true}
+	translations, key := &h.orders, f
 	if done, found := translations.Load(key); found {
 		if err, failed := done.(error); failed {
 			return nil, err

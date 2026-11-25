@@ -264,6 +264,22 @@ func TestNextSetsKeys(t *testing.T) {
 	}
 }
 
+// Bốn khoá từ ba guard (hai khoá trong một next, rồi mỗi guard một khoá): request giữ cả bốn. Chỗ dựng sẵn cho khoá
+// đầu của một next và hai khoá đầu của một request (request.go, 25/11/2026) không làm mất khoá nào khi đầy.
+func TestNextSetsManyKeys(t *testing.T) {
+	w, _, log := door(t, "", guarded(
+		`(context) => context.next({ a: "1", b: "2" })`,
+		`(context) => context.next({ c: "3" })`,
+		`(context) => context.next({ d: "4" })`,
+		`(context) => context.error(context.request.a + context.request.b + context.request.c + context.request.d)`,
+	))
+	for range 2 {
+		if rec := serve(w, "https://shop.vn/"); rec.Code != 403 || rec.Body.String() != "1234" {
+			t.Errorf("%d %q, log %q", rec.Code, rec.Body.String(), log.take())
+		}
+	}
+}
+
 // Các quyết định: error là 403, redirect là 302 khi không có status; status(3xx).redirect, status(4xx).error; mã và đối
 // số sai là lỗi của guard (500), một dòng mới trong địa chỉ chuyển hướng cũng vậy. Chuyển hướng là thành công (success),
 // từ chối là error.

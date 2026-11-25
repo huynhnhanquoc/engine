@@ -46,17 +46,18 @@ type Website struct {
 	// StaticCheck là khoảng giữa hai lần so một file giữ ấm với đĩa (static.go); 0 là một giây. Đặt trước request đầu.
 	StaticCheck time.Duration
 
-	folder    string    // thư mục của application.work: routes tính từ đây
-	console   io.Writer // nơi console.log của các site viết, đầu dòng [tên site]
-	addresses []string
-	guards    []value.Value
-	routes    value.Value
-	memory    value.Value
-	energy    value.Value
-	warm      value.Value // true, false, hay (context) => boolean: site giữ file tĩnh trong RAM (static.go)
-	success   []value.Value
-	errors    []value.Value
-	finally   []value.Value
+	folder     string    // thư mục của application.work: routes tính từ đây
+	console    io.Writer // nơi console.log của các site viết, đầu dòng [tên site]
+	addresses  []string
+	guards     []value.Value
+	guardNames []string // "application.website.guard[2]": dựng một lần, cho lời báo của guard ấy
+	routes     value.Value
+	memory     value.Value
+	energy     value.Value
+	warm       value.Value // true, false, hay (context) => boolean: site giữ file tĩnh trong RAM (static.go)
+	success    []value.Value
+	errors     []value.Value
+	finally    []value.Value
 
 	sitesMu sync.Mutex
 	sites   map[string]*siteLoad // thư mục site → lần biên dịch của nó
@@ -108,6 +109,9 @@ func LoadWebsite(booted Booted) (*Website, error) {
 		return items
 	}
 	w.guards = functions("application.website.guard", f.Guards)
+	for i := range w.guards {
+		w.guardNames = append(w.guardNames, fmt.Sprintf("application.website.guard[%d]", i))
+	}
 	w.success = functions("application.website.success", f.Success)
 	w.errors = functions("application.website.error", f.Errors)
 	w.finally = functions("application.website.finally", f.Finally)
@@ -169,8 +173,11 @@ type answer struct {
 // ServeHTTP là một request: chuỗi của host trên một lượt chạy mới, site trên lượt của nó, câu trả lời, rồi các hàm sau
 // khi gửi trên lượt của host (một lượt mới nếu chuỗi đã dùng hết năng lượng hay bộ nhớ của nó).
 func (w *Website) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
-	c := &requestContext{request: newRequest(r), stage: hostGuard}
-	m := runtime.New(runtime.Options{Memory: HostMemory, Energy: HostEnergy, Context: r.Context()})
+	c := &requestContext{stage: hostGuard}
+	c.request = &c.own
+	newRequest(c.request, r)
+	m := runtime.Take(runtime.Options{Memory: HostMemory, Energy: HostEnergy, Context: r.Context()})
+	defer m.Release()
 	a := w.decide(m, c)
 	a.status = send(rw, r, a)
 	a.file.close()
@@ -185,7 +192,7 @@ func (w *Website) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 func (w *Website) decide(m *runtime.Machine, c *requestContext) answer {
 	this := value.Struct(c)
 	for i, guard := range w.guards {
-		if a, stop := w.guard(m, c, this, guard, fmt.Sprintf("application.website.guard[%d]", i)); stop {
+		if a, stop := w.guard(m, c, this, guard, w.guardNames[i]); stop {
 			return a
 		}
 	}
@@ -251,19 +258,18 @@ func (w *Website) folderOf(m *runtime.Machine, this value.Value) (string, value.
 			return "", v
 		}
 	}
-	at := where(w.routes)
 	if !v.IsString() || v.String() == "" {
-		return "", value.Fail(value.TypeCode, `application.website.routes returned %s: the site's folder, like "apps/03dt/shop.vn"`, describeReturn(v)).Within(at)
+		return "", value.Fail(value.TypeCode, `application.website.routes returned %s: the site's folder, like "apps/03dt/shop.vn"`, describeReturn(v)).Within(where(w.routes))
 	}
 	folder := path.Clean(v.String())
 	if strings.Contains(v.String(), "\\") || path.IsAbs(folder) || folder == ".." || strings.HasPrefix(folder, "../") ||
 		strings.Contains(folder, ":") {
 		return "", value.Fail(value.TypeCode, "application.website.routes returned %q: a folder inside the folder of application.work, "+
-			"written with /", v.String()).Within(at)
+			"written with /", v.String()).Within(where(w.routes))
 	}
 	if path.Dir(folder) == "." {
 		return "", value.Fail(value.TypeCode, "application.website.routes returned %q: a site sits in an app's folder, like "+
-			"apps/<identity>/<domain>: its parent is the app's root, where app/… imports start", v.String()).Within(at)
+			"apps/<identity>/<domain>: its parent is the app's root, where app/… imports start", v.String()).Within(where(w.routes))
 	}
 	return folder, value.Value{}
 }
@@ -330,10 +336,10 @@ func describeReturn(v value.Value) string {
 func send(rw http.ResponseWriter, r *http.Request, a answer) int {
 	h := rw.Header()
 	if a.file != nil {
-		h.Set("Content-Type", a.file.kind)
-		h.Set("X-Content-Type-Options", "nosniff")
-		h.Set("ETag", a.file.etag)
-		h.Set("Cache-Control", a.file.cache)
+		h["Content-Type"] = a.file.kind
+		h["X-Content-Type-Options"] = nosniff
+		h["Etag"] = a.file.etag
+		h["Cache-Control"] = a.file.cache
 		sw := &statusWriter{ResponseWriter: rw}
 		http.ServeContent(sw, r, "", a.file.modified, a.file.content)
 		if sw.status == 0 {
@@ -401,19 +407,22 @@ func (w *Website) after(m *runtime.Machine, c *requestContext, a answer) {
 		return
 	}
 	if m.Energy() <= 0 { // chuỗi của host dừng vì hết năng lượng hay bộ nhớ: các hàm sau khi gửi có lượt của chúng
-		m = runtime.New(runtime.Options{Memory: HostMemory, Energy: HostEnergy, Context: c.request.http.Context()})
+		m = runtime.Take(runtime.Options{Memory: HostMemory, Energy: HostEnergy, Context: c.request.http.Context()})
+		defer m.Release()
 	}
 	c.stage, c.response = afterSend, responseOf(a)
 	this := value.Struct(c)
-	run := func(name string, list []value.Value) {
-		for i, hook := range list {
-			if r := m.Call(hook, this); r.IsInvalid() {
-				fmt.Fprintf(w.log(), "website: application.website.%s[%d]: %v\n", name, i, r.Error())
-			}
+	w.hooks(m, this, name, hooks)
+	w.hooks(m, this, "finally", w.finally)
+}
+
+// hooks chạy các hàm sau khi gửi của một danh sách; một hàm ném thì viết lỗi vào Log và chạy tiếp.
+func (w *Website) hooks(m *runtime.Machine, this value.Value, name string, list []value.Value) {
+	for i, hook := range list {
+		if r := m.Call(hook, this); r.IsInvalid() {
+			fmt.Fprintf(w.log(), "website: application.website.%s[%d]: %v\n", name, i, r.Error())
 		}
 	}
-	run(name, hooks)
-	run("finally", w.finally)
 }
 
 // responseOf là context.response: { status, error }, error null khi thành công, hay { code, message, at } (at null
@@ -421,10 +430,16 @@ func (w *Website) after(m *runtime.Machine, c *requestContext, a answer) {
 func responseOf(a answer) value.Value {
 	failure := value.Null()
 	if a.code != "" {
-		failure = value.Object().Set("code", text(a.code)).Set("message", value.String(a.message)).Set("at", text(a.at)).Freeze()
+		failure = value.ObjectFrom(failureShape, []value.Value{text(a.code), value.String(a.message), text(a.at)}).Freeze()
 	}
-	return value.Object().Set("status", value.Number(float64(a.status))).Set("error", failure).Freeze()
+	return value.ObjectFrom(responseShape, []value.Value{value.Number(float64(a.status)), failure}).Freeze()
 }
+
+// responseShape, failureShape là khoá của context.response và của response.error, dùng chung.
+var (
+	responseShape = value.NewShape([]string{"status", "error"})
+	failureShape  = value.NewShape([]string{"code", "message", "at"})
+)
 
 // text là s, null khi rỗng.
 func text(s string) value.Value {

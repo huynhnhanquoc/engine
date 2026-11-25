@@ -5,6 +5,7 @@ package runtime
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/huynhnhanquoc/engine/core/compiler"
@@ -68,6 +69,50 @@ func (m *Machine) Memo(s string) *javascript.TextMemo {
 
 // New là một lượt chạy mới với options.
 func New(options Options) *Machine {
+	m := &Machine{stack: make([]value.Value, 0, startStack)}
+	m.start(options)
+	return m
+}
+
+// startStack là chỗ đầu của ngăn xếp một máy mới; keptStack là ngăn xếp lớn nhất một máy trả về kho còn giữ: một
+// lượt chạy đệ quy sâu không để lại cho kho một mảng lớn.
+const (
+	startStack = 256
+	keptStack  = 4096
+)
+
+// machines là các máy đã xong lượt chạy (Release), chờ lượt sau (25/11/2026): ngăn xếp 8 KB của một máy là hơn
+// nửa số byte engine làm ra cho một request qua chuỗi của host (15,9 KB, test/host/cost_test.go), nên mỗi request cấp
+// lại nó là việc chính của GC.
+var machines sync.Pool
+
+// Take là New, với một máy đã trả về kho khi có: cùng trần, cùng nơi, ngăn xếp rỗng, không gì của lượt chạy trước.
+func Take(options Options) *Machine {
+	m, _ := machines.Get().(*Machine)
+	if m == nil {
+		return New(options)
+	}
+	m.start(options)
+	return m
+}
+
+// Release trả m về kho cho một lượt chạy sau (Take). Chỉ gọi khi lượt chạy đã xong hẳn và không ai còn giữ m: code Go
+// của engine dùng javascript.Run trong lời gọi, không giữ nó, và không giữ một khúc ngăn xếp (đối số của một hàm có
+// sẵn) sau lời gọi. Mọi ô của ngăn xếp được xoá: lượt chạy sau không thấy, và GC không giữ, giá trị nào của lượt này.
+func (m *Machine) Release() {
+	if cap(m.stack) > keptStack {
+		return
+	}
+	stack := m.stack[:cap(m.stack)]
+	clear(stack)
+	kept := m.kept[:cap(m.kept)]
+	clear(kept)
+	*m = Machine{stack: stack[:0], kept: kept[:0]}
+	machines.Put(m)
+}
+
+// start đặt trần và nơi của lượt chạy, mặc định khi options không nói.
+func (m *Machine) start(options Options) {
 	energy := options.Energy
 	if energy <= 0 {
 		energy = DefaultEnergy
@@ -76,8 +121,7 @@ func New(options Options) *Machine {
 	if memory <= 0 {
 		memory = DefaultMemory
 	}
-	return &Machine{stack: make([]value.Value, 0, 256), energy: energy, memory: uint64(memory), location: options.Location,
-		context: options.Context}
+	m.energy, m.memory, m.location, m.context = energy, uint64(memory), options.Location, options.Context
 }
 
 // Energy là năng lượng còn lại.
@@ -121,12 +165,19 @@ func (m *Machine) Call(function value.Value, arguments ...value.Value) value.Val
 	return m.call(function, arguments)
 }
 
+// Các đối số Go đưa vào không thoát khỏi lời gọi (25/11/2026): một closure chép chúng lên ngăn xếp khi vào khung; một
+// hàm có sẵn nhận bản chép của chúng trên ngăn xếp, như đối số của INVOKE. Nhờ vậy m.Call(guard, this) của host không
+// cấp một mảng đối số mỗi lời gọi (chín lần mỗi request qua chuỗi của host).
 func (m *Machine) call(function value.Value, arguments []value.Value) value.Value {
 	switch f := function.Function().(type) {
 	case *Closure:
 		return m.execute(f, arguments, -1)
 	case *javascript.Native:
-		return f.Call(m, arguments...)
+		n := len(m.stack)
+		m.stack = append(m.stack, arguments...)
+		r := f.Call(m, m.stack[n:len(m.stack):len(m.stack)]...)
+		m.stack = m.stack[:n]
+		return r
 	}
 	return value.Fail(value.TypeCode, "%s is not a function", kindName(function))
 }

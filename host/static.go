@@ -137,11 +137,26 @@ type siteStatic struct {
 
 // servedFile là một file sắp gửi: byte giữ trong RAM, hay file mở từ đĩa (closer đóng nó sau khi gửi).
 type servedFile struct {
-	content           io.ReadSeeker
-	closer            io.Closer
-	modified          time.Time
-	kind, etag, cache string
+	content  io.ReadSeeker
+	closer   io.Closer
+	modified time.Time
+	fileHeaders
+	kept bytes.Reader // content của một file giữ ấm: nằm trong servedFile, một lần cấp phát
 }
+
+// fileHeaders là Content-Type, ETag, Cache-Control của một file, mỗi cái là giá trị của header trong http.Header, một
+// mảng một phần tử, cap 1: Header.Add của ai đó cấp mảng mới chứ không ghi vào mảng này. File giữ ấm dựng chúng một lần
+// và mọi request dùng chung (25/11/2026: bốn Header.Set là bốn lần cấp phát mỗi request).
+type fileHeaders struct {
+	kind, etag, cache []string
+}
+
+func headersOf(kind, etag, cache string) fileHeaders {
+	return fileHeaders{kind: []string{kind}, etag: []string{etag}, cache: []string{cache}}
+}
+
+// nosniff là X-Content-Type-Options của mọi file tĩnh, dùng chung như fileHeaders.
+var nosniff = []string{"nosniff"}
 
 func (f *servedFile) close() {
 	if f != nil && f.closer != nil {
@@ -176,7 +191,7 @@ func (s *siteStatic) open(name string) *servedFile {
 		file.Close()
 		return nil
 	}
-	return &servedFile{content: file, closer: file, modified: info.ModTime(), kind: kind, etag: etag, cache: cache}
+	return &servedFile{content: file, closer: file, modified: info.ModTime(), fileHeaders: headersOf(kind, etag, cache)}
 }
 
 // headers là câu trả lời của file name nói gì về nó: loại; một ETag cho file như nó nằm trên đĩa, từ giờ ghi và cỡ, mà
@@ -304,14 +319,17 @@ type keptFiles struct {
 
 // keptFile là một file giữ: byte của nó và câu trả lời nói gì về nó.
 type keptFile struct {
-	data              []byte
-	modified          time.Time
-	kind, etag, cache string
-	checked           atomic.Int64 // lần so với đĩa sau cùng (heldNow)
+	data     []byte
+	modified time.Time
+	fileHeaders
+	checked atomic.Int64 // lần so với đĩa sau cùng (heldNow)
 }
 
 func (k *keptFile) served() *servedFile {
-	return &servedFile{content: bytes.NewReader(k.data), modified: k.modified, kind: k.kind, etag: k.etag, cache: k.cache}
+	f := &servedFile{modified: k.modified, fileHeaders: k.fileHeaders}
+	f.kept.Reset(k.data)
+	f.content = &f.kept
+	return f
 }
 
 // get là file name khi nó được giữ. Request so nó với đĩa (một request mỗi every) thì bỏ nó khi nó đổi hay mất:
@@ -365,7 +383,7 @@ func (m *keptFiles) keep(name string, file *os.File, info os.FileInfo, kind, eta
 		m.size.Add(was - size)
 		return nil
 	}
-	k := &keptFile{data: data, modified: info.ModTime(), kind: kind, etag: etag, cache: cache}
+	k := &keptFile{data: data, modified: info.ModTime(), fileHeaders: headersOf(kind, etag, cache)}
 	k.checked.Store(heldNow())
 	var replaced int64
 	if previous, loaded := m.files.Swap(name, k); loaded {

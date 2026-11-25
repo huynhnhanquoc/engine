@@ -256,6 +256,35 @@ func TestStatementsRead(t *testing.T) {
 	}
 }
 
+// SQL của một câu được nhớ theo dạng của nó (25/11/2026: bảng, hành động, số dòng, các điều kiện, các bước sắp xếp và
+// chiều của chúng): cùng một hàm điều kiện với first, count, list(2), list(3), hai chiều sắp xếp, một điều kiện nữa
+// trước hay sau nó đều là câu khác. Thiếu một phần trong khoá là hai câu chung một SQL, và một ca ở đây sai. Quá số dạng
+// một Handle nhớ (256), câu vẫn đúng: list(n) với n từ 1 tới 300.
+func TestStatementsOfOneShape(t *testing.T) {
+	w, _, log := databaseSite(t, 10, "", map[string]string{
+		"shapes": `const isNew = (orders) => orders.status === "moi";
+  const byAmount = (orders) => orders.amount;
+  const late = (orders) => orders.id > 5;
+  const base = db.where(isNew);
+  return context.json([base.first().id, base.count(), base.list(2).length, base.list(3).length,
+    base.ascending(byAmount).list(5).map((o) => o.id), base.descending(byAmount).list(5).map((o) => o.id),
+    base.where(late).list().map((o) => o.id), base.list().length, db.where(late).where(isNew).list().map((o) => o.id),
+    db.where(late).count()]);`,
+		"many": `let total = 0;
+  for (let n = 1; n <= 300; n++) { total = total + db.where((orders) => orders.id > 0).list(n).length; }
+  return context.json(total);`,
+	})
+	for range 2 { // lần hai: mọi SQL đã nhớ
+		if rec := serve(w, "https://site.vn/shapes"); rec.Code != 200 ||
+			rec.Body.String() != `[1,5,2,3,[1,3,5,7,9],[9,7,5,3,1],[7,9],5,[7,9],5]` {
+			t.Errorf("shapes: %d %s, log %q", rec.Code, rec.Body.String(), log.take())
+		}
+	}
+	if rec := serve(w, "https://site.vn/many"); rec.Code != 200 || rec.Body.String() != "2955" {
+		t.Errorf("300 shapes: %d %s, log %q", rec.Code, rec.Body.String(), log.take())
+	}
+}
+
 // Một câu viết sai hay chạy trên một file thiếu thứ struct khai: 500, lời báo có chỗ (file:dòng:cột của hàm điều kiện,
 // hay đường dẫn của file database) và mã của nó.
 func TestStatementsRefuse(t *testing.T) {

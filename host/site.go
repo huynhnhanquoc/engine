@@ -62,6 +62,7 @@ type siteRule struct {
 	guard   value.Value
 	limiter *limiter
 	at      string // "shop.vn/router.work", cho lời báo
+	name    string // "a guard of shop.vn/router.work": dựng một lần, cho lời báo của guard
 }
 
 // door là một cửa: các luật đứng trước nó và hàm trả lời.
@@ -212,7 +213,7 @@ func (l *siteFiles) route(n *node, source string) error {
 			words = append(words, rule.Kind+"(…)")
 			switch rule.Kind {
 			case "guard":
-				rules = append(rules, siteRule{guard: rule.Value, at: n.file})
+				rules = append(rules, siteRule{guard: rule.Value, at: n.file, name: "a guard of " + n.file})
 			case "limit":
 				rules = append(rules, siteRule{limiter: newLimiter(rule.Rate, rule.Per), at: n.file})
 			case "cache":
@@ -353,7 +354,8 @@ func (w *Website) serveSite(s *site, c *requestContext, memory, energy int64) an
 	if method == "options" {
 		return answer{status: 204, allow: allowOf(target)}
 	}
-	m := runtime.New(runtime.Options{Memory: memory, Energy: energy, Context: c.request.http.Context()})
+	m := runtime.Take(runtime.Options{Memory: memory, Energy: energy, Context: c.request.http.Context()})
+	defer m.Release()
 	c.stage = siteGuard
 	this := value.Struct(c)
 	for i, n := range nodes {
@@ -391,24 +393,34 @@ func (w *Website) serveSite(s *site, c *requestContext, memory, energy int64) an
 // của thư mục áp cả cho file tĩnh của các thư mục nó phủ). Một thư mục site không biên dịch (bắt đầu bằng "_") không có
 // luật của riêng nó; luật all của các thư mục cha vẫn phủ. Không luật nào áp thì không dựng lượt chạy nào.
 func (w *Website) staticRules(s *site, c *requestContext, name string, memory, energy int64) (answer, bool) {
-	segments := strings.Split(name, "/")
-	segments = segments[:len(segments)-1] // các thư mục; đoạn cuối là file
-	nodes := []*node{s.root}
-	for _, segment := range segments {
+	var buffer [8]*node
+	nodes := append(buffer[:0], s.root)
+	own := true // thư mục của file có trong cây: methods của nó phủ file
+	for rest := name; ; {
+		segment, after, folder := strings.Cut(rest, "/")
+		if !folder {
+			break // đoạn cuối là file
+		}
+		rest = after
 		child, found := nodes[len(nodes)-1].children[segment]
 		if !found {
+			own = false
 			break
 		}
 		nodes = append(nodes, child)
 	}
-	own := len(nodes) == len(segments)+1 // thư mục của file có trong cây: methods của nó phủ file
 	var m *runtime.Machine
+	defer func() {
+		if m != nil {
+			m.Release()
+		}
+	}()
 	var this value.Value
 	for i, n := range nodes {
 		for _, chain := range n.chains {
 			if (chain.branch || own && i == len(nodes)-1) && chain.applies("get") {
 				if m == nil {
-					m = runtime.New(runtime.Options{Memory: memory, Energy: energy, Context: c.request.http.Context()})
+					m = runtime.Take(runtime.Options{Memory: memory, Energy: energy, Context: c.request.http.Context()})
 					c.stage = siteGuard
 					this = value.Struct(c)
 				}
@@ -433,7 +445,7 @@ func (w *Website) rules(m *runtime.Machine, c *requestContext, this value.Value,
 			}
 			continue
 		}
-		if a, stop := w.guard(m, c, this, rule.guard, "a guard of "+rule.at); stop {
+		if a, stop := w.guard(m, c, this, rule.guard, rule.name); stop {
 			return a, true
 		}
 	}

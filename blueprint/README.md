@@ -514,6 +514,39 @@ ngoài: tên có `\`, `:`, đoạn rỗng, `.`, `..`, đoạn kết thúc bằng
   (`-race`). 21 đối chứng đều đỏ. Chưa làm: tổng 32 MB chưa có test (engine2 thử bằng trường nội bộ), symlink (máy không
   có quyền tạo, test bỏ qua), favicon của router, trang `content.ui`.
 
+**Giá của chuỗi host (owner 25/11/2026: "vâng làm giảm giá chuỗi host đi"; `core/runtime/machine.go`, `database/`,
+`host/`):** một request file tĩnh của site giữ ấm qua chuỗi của bản thiết kế (năm guard, ba câu KitDB, routes, memory,
+energy, finally) làm ra 119 lần cấp phát, 15,9 KB (không tính httptest); nay 62 lần, khoảng 4 KB. Từng phần, lớn trước:
+- Máy của lượt chạy dùng lại (`runtime.Take`, `Machine.Release`, một `sync.Pool`): ngăn xếp 8 KB của mỗi máy là hơn nửa
+  số byte. Release xoá mọi ô của ngăn xếp và mọi trường (năng lượng, trần, cái đã đếm, độ sâu, MEMORY_LIMIT, các chuỗi
+  nhớ), và không giữ máy có ngăn xếp quá 4096 ô. Chuỗi host, site, các hàm sau khi gửi và luật của file tĩnh lấy máy từ
+  kho, trả khi request xong. Điều kiện: code Go của engine không giữ `javascript.Run` hay một khúc ngăn xếp sau lời gọi.
+- `m.Call(hàm, đối số…)` từ Go không cấp mảng đối số: một hàm có sẵn nhận bản chép trên ngăn xếp, như đối số của INVOKE
+  (chín lần mỗi request).
+- SQL của một câu nhớ theo dạng câu trên Handle (bảng, hành động, số dòng, tới 4 điều kiện, tới 4 bước sắp xếp và chiều
+  của chúng; 256 dạng mỗi Handle, quá thì dựng mỗi lần): dựng lại ba câu SQL mỗi request là một phần tám thời gian. Bản
+  dịch điều kiện tra theo con trỏ hàm (khoá struct cũ cấp phát mỗi lần tra); database đã mở giữ trên Handle (không qua
+  khoá chung của `Files` mỗi câu); `first` dựng một dòng; tên của tham số chỉ ghép khi lời báo cần.
+- Host: header của file giữ ấm dựng một lần, dùng chung (mảng một phần tử, cap 1); `bytes.Reader` nằm trong
+  `servedFile`; context và request một lần cấp phát; chỗ dựng sẵn cho khoá đầu của `next` và hai khoá đầu của request;
+  `context.response` theo Shape; tên guard dựng lúc nạp; chỗ của `routes` chỉ tính khi lỗi; luật của file tĩnh không cắt
+  chuỗi.
+- Đo xen kẽ 8 vòng (HEAD 1f58c29b, bản này, engine2 `archive/v0.2`; trung vị; máy chạy khác lượt đo lát 4): giữ ấm một
+  luồng 15,8 → 10,1 µs (engine2 4,84); mười sáu luồng 7,80 → 4,15 µs (engine2 4,91: nhanh hơn engine2); không giữ ấm
+  116 → 109 µs (engine2 95,6). Trang qua chuỗi, 8 vòng HEAD và bản này: tới cửa của site 19,2 → 9,97 µs, don-hang
+  45,4 → 21,5, guard từ chối 22,1 → 10,9, chuyển hướng 9,98 → 4,73. Hai mức của mục 12 (≈ 10–11 µs một luồng, ≈ 4,5 µs
+  mười sáu luồng) đạt; một luồng vẫn chậm hơn engine2 khoảng hai lần, như mục 12 đoán cho thiết kế mọi request chạy guard.
+- Test: `test/runtime/reuse_test.go` (máy lấy lại sau ENERGY_LIMIT và MEMORY_LIMIT chạy như mới; máy trong kho không giữ
+  đối số của lượt trước, weak pointer sau một GC; `m.Call` không cấp phát; hàm có sẵn giữ đối số qua một lời gọi lồng
+  làm ngăn xếp cấp lại), `TestStatementsOfOneShape` (một hàm điều kiện với first, count, list(2), list(3), hai chiều sắp
+  xếp, điều kiện thứ hai trước và sau; 300 dạng), `TestNextSetsManyKeys`, `test/host/cost_test.go` (ngân sách 65 lần,
+  5 KB; bỏ qua dưới `-race`, nơi kho bỏ máy có chủ ý). 12 đối chứng đều đỏ; 4 đối chứng của lát 4 vẫn đỏ. `-race` của
+  test/runtime đỏ ở `TestEnergyEndsTheEngineWork` (tỉ lệ thời gian), cả trên HEAD.
+- Chưa làm (đề xuất mới): các dòng đọc ra dùng chung với kết quả trong cache (bỏ dựng object và bản chép của `next` mỗi
+  request) làm dòng đọc ra thành đóng băng, đổi ngữ nghĩa: chờ owner. Ô và closure của một hàm bắt biến
+  (`(banned) => banned.ip === ip`) là phần lớn cấp phát còn lại của VM. `http.ServeContent` định dạng Last-Modified mỗi
+  request.
+
 ## Cách viết `application.work` (owner 24/11/2026)
 
 Owner, 24/11/2026: "tôi còn định hướng application theo kiểu này nữa" (dạng `const app = application(…)`,

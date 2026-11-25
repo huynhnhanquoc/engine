@@ -29,6 +29,7 @@ type request struct {
 	secure   bool   // đến qua TLS
 	set      []entry
 	cookies  value.Value // dựng lần đầu đọc
+	inline   [2]entry    // chỗ của hai khoá đầu các guard đặt: set bắt đầu ở đây, không cấp phát
 }
 
 // entry là một khoá context.next({ … }) đặt, và giá trị đã chép, đã khoá.
@@ -37,7 +38,8 @@ type entry struct {
 	item value.Value
 }
 
-func newRequest(r *http.Request) *request {
+// newRequest điền q bằng r (q nằm trong requestContext: context và request là một lần cấp phát).
+func newRequest(q *request, r *http.Request) {
 	hostname := r.Host
 	if host, _, err := net.SplitHostPort(hostname); err == nil {
 		hostname = host
@@ -51,7 +53,8 @@ func newRequest(r *http.Request) *request {
 	if address, err := netip.ParseAddr(ip); err == nil && address.Is4In6() {
 		ip = address.Unmap().String()
 	}
-	return &request{http: r, hostname: strings.ToLower(hostname), ip: ip, secure: r.TLS != nil}
+	*q = request{http: r, hostname: strings.ToLower(hostname), ip: ip, secure: r.TLS != nil}
+	q.set = q.inline[:0]
 }
 
 // Key là request.name.
@@ -174,6 +177,7 @@ type requestContext struct {
 	request  *request
 	response value.Value
 	stage    stage
+	own      request // request của context này (newRequest)
 }
 
 // contextWords là các chữ của context; contextKeys cho lời báo.
@@ -281,6 +285,7 @@ func (c *requestContext) next(run javascript.Run, keys value.Value) value.Value 
 		return value.Fail(value.TypeCode, "context.next(keys) takes an object of keys to add to the request, like next({ tenant }), got %s", keys.Typeof())
 	}
 	d := &decision{kind: next}
+	d.set = d.one[:0]
 	for _, key := range keys.ReadKeys() {
 		if c.request.has(key) {
 			return value.Fail(value.TypeCode, "context.next({ %s }): the request already has the key %s", key, key)
@@ -421,6 +426,7 @@ type decision struct {
 	url         string
 	contentType string // answered
 	set         []entry
+	one         [1]entry // chỗ của khoá đầu next đặt: next({ tenant }) là một lần cấp phát
 }
 
 func (*decision) Key(name string) value.Value {

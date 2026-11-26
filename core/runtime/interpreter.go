@@ -405,7 +405,7 @@ func (m *Machine) join(segments []value.Value) value.Value {
 	}
 	items := make([]value.Value, 0, total)
 	for _, segment := range segments {
-		items = append(items, segment.Items()...)
+		items = append(items, segment.ReadItems()...) // append chép: không chép thêm một lần trước đó (Items)
 	}
 	return value.ArrayOf(items)
 }

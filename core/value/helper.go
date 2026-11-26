@@ -31,8 +31,11 @@ func (v Value) Scan(target any) error {
 			return fmt.Errorf("takes a number, got %s", v.Typeof())
 		}
 		n := v.Number()
-		if n != math.Trunc(n) || n < math.MinInt32 || n > math.MaxInt32 {
+		if n != math.Trunc(n) {
 			return fmt.Errorf("%v is not an integer", n)
+		}
+		if n < math.MinInt32 || n > math.MaxInt32 {
+			return fmt.Errorf("%s is not an integer from %d to %d", whole(n), math.MinInt32, math.MaxInt32)
 		}
 		*dst = int(n)
 		return nil
@@ -41,8 +44,11 @@ func (v Value) Scan(target any) error {
 			return fmt.Errorf("takes a number, got %s", v.Typeof())
 		}
 		n := v.Number()
-		if n != math.Trunc(n) || n < -(1<<53) || n > 1<<53 {
+		if n != math.Trunc(n) {
 			return fmt.Errorf("%v is not an integer", n)
+		}
+		if n < -float64(safeInteger) || n > float64(safeInteger) {
+			return fmt.Errorf("%s is not an integer from %d to %d", whole(n), -safeInteger, safeInteger)
 		}
 		*dst = int64(n)
 		return nil
@@ -72,6 +78,24 @@ func (v Value) Scan(target any) error {
 		return nil
 	}
 	return fmt.Errorf("cannot scan into %T", target)
+}
+
+// safeInteger là số nguyên lớn nhất một số của JavaScript giữ đúng, Number.MAX_SAFE_INTEGER, 2^53 − 1: từ 2^53 hai số
+// nguyên liền nhau là cùng một float64 (2^53 + 1 đọc ra 2^53), nên số chương trình viết có thể không phải số tới đây.
+const safeInteger int64 = 1<<53 - 1
+
+// whole là số nguyên n viết đủ chữ số cho lời báo ngoài khoảng: 3000000000, không phải 3e+09 như %v viết (26/11/2026:
+// "3e+09 is not an integer" nói sai về một số nguyên). Từ 10^21 thì viết bằng mũ, như JavaScript viết một số.
+func whole(n float64) string {
+	switch {
+	case math.IsInf(n, 1):
+		return "Infinity"
+	case math.IsInf(n, -1):
+		return "-Infinity"
+	case math.Abs(n) >= 1e21:
+		return strconv.FormatFloat(n, 'g', -1, 64)
+	}
+	return strconv.FormatFloat(n, 'f', -1, 64)
 }
 
 // HostPort là địa chỉ lắng nghe v viết, ở dạng "host:port" net.Listen nhận:

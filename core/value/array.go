@@ -69,6 +69,19 @@ func (v Value) Items() []Value {
 	return slices.Clone(l.items)
 }
 
+// ReadItems là các phần tử của mảng v, chỉ để đọc, không chép (26/11/2026; như ReadKeys của object): cho code Go của
+// engine chép chúng đi ngay, như append(out, v.ReadItems()...) của [...a], concat, flatMap, nơi Items chép một lần rồi
+// append chép lần nữa. Bên gọi không ghi vào slice, không giữ nó sau lời gọi của mình, và không để mã của chương trình
+// chạy giữa lúc lấy và lúc đọc: một push có thể cấp lại mảng, một phép gán ghi thẳng vào chính các ô này. Một phương
+// thức Go nhận các phần tử làm đối số thì vẫn qua Items (struct.go): nó có thể giữ chúng. nil khi v không phải mảng.
+func (v Value) ReadItems() []Value {
+	l := v.list()
+	if l == nil {
+		return nil
+	}
+	return l.items
+}
+
 // ItemsBetween là bản chép các phần tử [start, end) của mảng v, kẹp vào độ dài: slice chép đúng khúc nó cần, không
 // cả mảng.
 func (v Value) ItemsBetween(start, end int) []Value {

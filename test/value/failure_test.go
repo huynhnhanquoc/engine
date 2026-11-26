@@ -76,3 +76,47 @@ func TestWithin(t *testing.T) {
 		t.Error("an empty place gives the error back")
 	}
 }
+
+// Code, Message, At của mọi dạng lỗi một Value mang (26/11/2026: ba hàm đọc thẳng lỗi, không dựng một fault mỗi lần
+// đọc): lỗi không mã của Invalid và Error, lỗi bọc một lỗi có mã bằng %w hay errors.Join, lỗi có mã, và mỗi dạng sau
+// khi Within gắn chỗ. Đọc một lỗi không cấp phát; riêng Code của một lỗi không phải fault đi tìm mã trong lỗi nó bọc
+// (errors.As), một lần cấp phát.
+func TestFailureReaders(t *testing.T) {
+	coded := value.Errorf(value.TypeCode, "no JSON")
+	for _, c := range []struct {
+		name                    string
+		v                       value.Value
+		code, message, at       string
+		codeAllocs, readsAllocs float64
+	}{
+		{"Invalid", value.Invalid("not an address"), "", "not an address", "", 1, 0},
+		{"Invalid with a cause", value.Invalid("listen: %w", os.ErrNotExist), "", "listen: " + os.ErrNotExist.Error(), "", 1, 0},
+		{"Error", value.Error(errors.New("disk full")), "", "disk full", "", 1, 0},
+		{"Error of a wrapped code", value.Error(fmt.Errorf("JSON.stringify: %w", coded)), value.TypeCode, "JSON.stringify: no JSON", "", 1, 0},
+		// errors.Join dựng lời báo của nó mỗi lần được hỏi (hai lần cấp phát): chúng là của lỗi, không phải của Message
+		{"Error of a joined code", value.Error(errors.Join(errors.New("first"), coded)), value.TypeCode, "first\nno JSON", "", 1, 2},
+		{"Fail", value.Fail(value.RangeCode, "past %s", "30s"), value.RangeCode, "past 30s", "", 0, 0},
+		{"Fail within", value.Fail(value.RangeCode, "past 30s").Within("timeout").Within("application.database"), value.RangeCode, "past 30s",
+			"application.database.timeout", 0, 0},
+		{"Invalid within", value.Invalid("not an address").Within("[1]").Within("listen"), "", "not an address", "listen[1]", 0, 0},
+		{"a wrapped code within", value.Error(fmt.Errorf("JSON.stringify: %w", coded)).Within("body"), value.TypeCode, "JSON.stringify: no JSON",
+			"body", 0, 0},
+	} {
+		if c.v.Code() != c.code || c.v.Message() != c.message || c.v.At() != c.at {
+			t.Errorf("%s: code %q, message %q, at %q; want %q, %q, %q", c.name, c.v.Code(), c.v.Message(), c.v.At(), c.code, c.message, c.at)
+		}
+		var code, message, at string
+		if got := testing.AllocsPerRun(100, func() { code = c.v.Code() }); got > c.codeAllocs {
+			t.Errorf("%s: Code allocates %.0f times, want %.0f at most", c.name, got, c.codeAllocs)
+		}
+		if got := testing.AllocsPerRun(100, func() { message, at = c.v.Message(), c.v.At() }); got > c.readsAllocs {
+			t.Errorf("%s: Message and At allocate %.0f times, want %.0f at most", c.name, got, c.readsAllocs)
+		}
+		_, _, _ = code, message, at
+	}
+	for _, v := range []value.Value{value.Undefined(), value.Number(1), value.String("TYPE"), value.Error(nil)} {
+		if v.Code() != "" || v.Message() != "" || v.At() != "" {
+			t.Errorf("a %s is no error: code %q, message %q, at %q", v.Typeof(), v.Code(), v.Message(), v.At())
+		}
+	}
+}

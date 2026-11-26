@@ -95,10 +95,12 @@ func arrayConcat(run Run, this value.Value, arguments []value.Value) value.Value
 	if failure := room(run, uint64(total)*value.ItemBytes); failure.IsInvalid() {
 		return failure
 	}
-	items, holes := this.Items(), this.HasHoles()
+	// một mảng đủ chỗ cho cả kết quả, mỗi mảng chép vào đúng một lần (26/11/2026: Items chép, rồi append chép lần nữa)
+	items, holes := make([]value.Value, 0, total), this.HasHoles()
+	items = append(items, this.ReadItems()...)
 	for _, item := range arguments {
 		if item.IsArray() {
-			items = append(items, item.Items()...)
+			items = append(items, item.ReadItems()...)
 			holes = holes || item.HasHoles()
 		} else {
 			items = append(items, item)
@@ -384,7 +386,7 @@ func arrayFlatMap(run Run, this value.Value, arguments []value.Value) value.Valu
 			return false // flatMap bỏ lỗ của mảng hàm cho
 		}
 		if result.IsArray() {
-			out = append(out, result.Items()...)
+			out = append(out, result.ReadItems()...)
 		} else {
 			out = append(out, result)
 		}

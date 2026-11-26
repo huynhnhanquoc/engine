@@ -87,12 +87,31 @@ func (v Value) Within(path string) Value {
 	return Value{kind: invalid, data: &f}
 }
 
-// Code là mã của lỗi v: "" khi lỗi không có mã (Invalid, Error), hay v không phải lỗi.
+// Code, Message, At đọc thẳng lỗi v mang, không dựng một fault để đọc một trường của nó (26/11/2026): với một lỗi của
+// Invalid hay Error, mỗi lần đọc qua v.fault() là hai lần cấp phát và 91 ns, và runtime hỏi At ở mỗi khung một lỗi đi
+// qua. Ba hàm trả đúng thứ v.fault() trả.
+
+// Code là mã của lỗi v: "" khi lỗi không có mã (Invalid, Error), hay v không phải lỗi. Một lỗi của Invalid hay Error bọc
+// một lỗi có mã (%w) mang mã ấy.
 func (v Value) Code() string {
 	if v.kind != invalid {
 		return ""
 	}
-	return v.fault().code
+	err := v.data.(error)
+	if f, ok := err.(*fault); ok {
+		return f.code
+	}
+	return wrappedCode(err)
+}
+
+// wrappedCode là mã của lỗi có mã mà err bọc, "" khi không có. Để ngoài Code: con trỏ errors.As ghi vào nằm trên heap,
+// và chỉ lỗi không phải fault mới tới đây.
+func wrappedCode(err error) string {
+	var inner *fault
+	if errors.As(err, &inner) {
+		return inner.code
+	}
+	return ""
 }
 
 // Message là lời báo của lỗi v, không có chỗ (error.message); "" khi v không phải lỗi.
@@ -100,15 +119,22 @@ func (v Value) Message() string {
 	if v.kind != invalid {
 		return ""
 	}
-	return v.fault().message
+	err := v.data.(error)
+	if f, ok := err.(*fault); ok {
+		return f.message
+	}
+	return err.Error() // lỗi của Invalid hay Error: không có chỗ, lời báo là cả lỗi
 }
 
-// At là chỗ của lỗi v (error.at): "" khi chưa gắn, hay v không phải lỗi.
+// At là chỗ của lỗi v (error.at): "" khi chưa gắn, hay v không phải lỗi. Chỉ Within gắn chỗ, và nó luôn cất một fault.
 func (v Value) At() string {
 	if v.kind != invalid {
 		return ""
 	}
-	return v.fault().at
+	if f, ok := v.data.(*fault); ok {
+		return f.at
+	}
+	return ""
 }
 
 // fault là lỗi v mang, ở dạng có cấu trúc: lỗi của Invalid hay Error thành một fault không chỗ, lỗi gốc là chính nó,
